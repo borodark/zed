@@ -25,7 +25,7 @@ defmodule Zed.Converge.PlanTest do
       assert step.args.properties["mountpoint"] == "/opt/web"
     end
 
-    test "app update produces deploy + restart steps" do
+    test "app update produces deploy + install + restart steps" do
       diff = [
         %Diff{
           resource: %Node{
@@ -41,11 +41,16 @@ defmodule Zed.Converge.PlanTest do
       ]
 
       plan = Plan.from_diff(diff)
-      assert length(plan.steps) == 2
+      # app:deploy, service:install, service:restart
+      assert length(plan.steps) == 3
 
       types = Enum.map(plan.steps, & &1.type)
       assert :app in types
       assert :service in types
+
+      actions = Enum.map(plan.steps, & &1.action)
+      assert :install in actions
+      assert :restart in actions
     end
 
     test "steps are sorted: datasets before apps before services" do

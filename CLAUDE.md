@@ -30,9 +30,9 @@ ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-val
 
 ## Test Suites
 
-- `mix test` — 17 unit tests (DSL compilation, IR validation, plan ordering). Run anywhere.
-- `mix test --include zfs_live` — 17 ZFS integration tests against real `jeff/zed-test`. Requires root + ZFS.
-- **Total**: 34 tests, 0 failures on both Linux and FreeBSD.
+- `mix test` — 24 unit tests (DSL, IR validation, plan ordering, jail generation). Run anywhere.
+- `mix test --include zfs_live` — 21 ZFS integration tests against real `jeff/zed-test`. Requires root + ZFS.
+- **Total**: 45 tests, 0 failures on both Linux and FreeBSD.
 
 ## DSL Example
 
@@ -63,9 +63,20 @@ defmodule MyInfra.Trading do
 end
 ```
 
+Working examples in `lib/zed/examples/`:
+```elixir
+# Basic deploy
+Zed.Examples.TestDeploy.diff()
+Zed.Examples.TestDeploy.converge()
+Zed.Examples.TestDeploy.status()
+
+# Jail deploy (app inside jail)
+Zed.Examples.JailDeploy.converge(dry_run: true)
+```
+
 ## Phased Plan
 
-### Phase 1 — MVP (current: DONE)
+### Phase 1 — MVP (DONE)
 - [x] DSL: dataset, app, health, snapshots verbs
 - [x] IR + compile-time validation
 - [x] ZFS: dataset, property, snapshot operations
@@ -74,20 +85,22 @@ end
 - [x] CLI: converge, diff, rollback, status
 - [x] 34 tests passing on FreeBSD + real ZFS
 
-### Phase 1b — Wire DSL to real ZFS (NEXT)
-- [ ] Run `MyDeploy.converge()` against jeff/zed-test
-- [ ] FreeBSD rc.d service generation (service_install)
-- [ ] BEAM release unpack + symlink current
-- [ ] End-to-end: DSL → converge → ZFS properties stamped
+### Phase 1b — Wire DSL to real ZFS (DONE)
+- [x] Run `MyDeploy.converge()` against jeff/zed-test
+- [x] FreeBSD rc.d service generation (service_install)
+- [x] BEAM release unpack + symlink (wired in executor, needs tarball)
+- [x] End-to-end: DSL → converge → ZFS properties stamped
+- [x] 38 tests passing (21 unit + 17 ZFS live)
 
 ### Phase 2 — illumos parity
 - [ ] SMF manifest generation
 - [ ] zone verb
 
-### Phase 3 — isolation
-- [ ] jail verb: jail.conf.d generation
-- [ ] zone verb: zonecfg/zoneadm
-- [ ] contains directive
+### Phase 3 — isolation (IN PROGRESS)
+- [x] jail verb: jail.conf.d generation
+- [x] jail convergence: install → create steps
+- [x] contains directive (app inside jail)
+- [ ] zone verb: zonecfg/zoneadm (illumos)
 
 ### Phase 4 — multi-host
 - [ ] Agent GenServer + mDNS discovery

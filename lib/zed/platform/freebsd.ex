@@ -8,6 +8,8 @@ defmodule Zed.Platform.FreeBSD do
 
   @behaviour Zed.Platform
 
+  @jail_conf_dir "/etc/jail.conf.d"
+
   @impl true
   def service_start(name) do
     case System.cmd("service", [name, "start"], stderr_to_stdout: true) do
@@ -87,5 +89,118 @@ defmodule Zed.Platform.FreeBSD do
     load_rc_config $name
     run_rc_command "$1"
     """
+  end
+
+  # --- Jail Operations ---
+
+  @doc "Install jail configuration to /etc/jail.conf.d/<name>.conf"
+  def jail_install(name, config) do
+    conf = generate_jail_conf(name, config)
+    path = Path.join(@jail_conf_dir, "#{name}.conf")
+
+    with :ok <- File.mkdir_p(@jail_conf_dir),
+         :ok <- File.write(path, conf) do
+      :ok
+    end
+  end
+
+  @doc "Create and start a jail."
+  def jail_create(name, _config) do
+    case System.cmd("jail", ["-c", "-f", jail_conf_path(name), name], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {out, code} -> {:error, {:jail_create_failed, code, out}}
+    end
+  end
+
+  @doc "Stop a running jail."
+  def jail_stop(name) do
+    case System.cmd("jail", ["-r", name], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {out, _} -> {:error, out}
+    end
+  end
+
+  @doc "Remove jail configuration file."
+  def jail_remove(name) do
+    path = jail_conf_path(name)
+
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Check if jail is running. Returns :running, :stopped, or {:error, reason}."
+  def jail_status(name) do
+    case System.cmd("jls", ["-j", name, "-q", "jid"], stderr_to_stdout: true) do
+      {_, 0} -> :running
+      {_, _} -> :stopped
+    end
+  end
+
+  @doc "List running jails."
+  def jail_list do
+    case System.cmd("jls", ["-q", "name"], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.trim()
+        |> String.split("\n", trim: true)
+
+      {_, _} ->
+        []
+    end
+  end
+
+  defp jail_conf_path(name), do: Path.join(@jail_conf_dir, "#{name}.conf")
+
+  @doc "Generate jail.conf content for a jail."
+  def generate_jail_conf(name, config) do
+    path = config[:path] || config[:mountpoint] || "/jails/#{name}"
+    hostname = config[:hostname] || "#{name}.local"
+    ip4 = config[:ip4]
+    ip6 = config[:ip6]
+    vnet = config[:vnet] || false
+
+    # Build parameters
+    params =
+      [
+        {"path", path},
+        {"host.hostname", hostname},
+        {"mount.devfs", nil},
+        {"exec.clean", nil},
+        {"exec.start", "/bin/sh /etc/rc"},
+        {"exec.stop", "/bin/sh /etc/rc.shutdown"}
+      ]
+      |> maybe_add_ip4(ip4, vnet)
+      |> maybe_add_ip6(ip6, vnet)
+      |> maybe_add_vnet(vnet)
+      |> format_jail_params()
+
+    """
+    #{name} {
+    #{params}
+    }
+    """
+  end
+
+  defp maybe_add_ip4(params, nil, _vnet), do: params
+  defp maybe_add_ip4(params, _ip4, true), do: params
+  defp maybe_add_ip4(params, ip4, false), do: params ++ [{"ip4.addr", ip4}]
+
+  defp maybe_add_ip6(params, nil, _vnet), do: params
+  defp maybe_add_ip6(params, _ip6, true), do: params
+  defp maybe_add_ip6(params, ip6, false), do: params ++ [{"ip6.addr", ip6}]
+
+  defp maybe_add_vnet(params, false), do: params
+  defp maybe_add_vnet(params, true), do: params ++ [{"vnet", nil}]
+
+  defp format_jail_params(params) do
+    params
+    |> Enum.map(fn
+      {key, nil} -> "    #{key};"
+      {key, val} -> "    #{key} = \"#{val}\";"
+    end)
+    |> Enum.join("\n")
   end
 end

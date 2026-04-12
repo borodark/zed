@@ -21,7 +21,7 @@ defmodule Zed.Converge do
       {:ok, :no_changes}
     else
       # Phase 2: Plan
-      plan = Plan.from_diff(diff, dry_run: dry_run)
+      plan = Plan.from_diff(diff, dry_run: dry_run, pool: ir.pool)
 
       if dry_run do
         {:dry_run, plan}

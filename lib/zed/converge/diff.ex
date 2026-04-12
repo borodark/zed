@@ -19,10 +19,12 @@ defmodule Zed.Converge.Diff do
 
   @doc "Compute the diff between IR and current ZFS state."
   def compute(%IR{} = ir) do
-    dataset_diffs = diff_datasets(ir)
-    app_diffs = diff_apps(ir)
-
-    (dataset_diffs ++ app_diffs)
+    [
+      diff_datasets(ir),
+      diff_apps(ir),
+      diff_jails(ir)
+    ]
+    |> List.flatten()
     |> Enum.reject(fn d -> d.action == :noop end)
   end
 
@@ -102,7 +104,8 @@ defmodule Zed.Converge.Diff do
   # --- Apps ---
 
   defp diff_apps(%IR{pool: pool, apps: apps}) do
-    Enum.map(apps, fn node ->
+    apps
+    |> Enum.map(fn node ->
       ds = node.config[:dataset]
       full_ds = if ds, do: "#{pool}/#{ds}", else: nil
 
@@ -131,6 +134,45 @@ defmodule Zed.Converge.Diff do
           current: %{version: current_version},
           desired: node.config,
           changes: [{:version, current_version, desired_version}]
+        }
+      end
+    end)
+  end
+
+  # --- Jails ---
+
+  defp diff_jails(%IR{pool: pool, jails: jails}) do
+    jails
+    |> Enum.map(fn node ->
+      ds = node.config[:dataset]
+      full_ds = if ds, do: "#{pool}/#{ds}", else: nil
+
+      # Check if jail is registered in ZFS properties
+      current_jail =
+        if full_ds && Dataset.exists?(full_ds) do
+          case Property.get(full_ds, "jail") do
+            {:ok, name} -> name
+            :not_set -> nil
+          end
+        end
+
+      jail_name = to_string(node.id)
+
+      if current_jail == jail_name do
+        %__MODULE__{
+          resource: node,
+          action: :noop,
+          current: %{jail: current_jail},
+          desired: node.config,
+          changes: []
+        }
+      else
+        %__MODULE__{
+          resource: node,
+          action: if(current_jail, do: :update, else: :create),
+          current: %{jail: current_jail},
+          desired: node.config,
+          changes: [{:jail, current_jail, jail_name}]
         }
       end
     end)

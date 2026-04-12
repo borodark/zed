@@ -8,34 +8,29 @@ defmodule Zed.Converge.Executor do
 
   alias Zed.Converge.{Plan, Step}
   alias Zed.ZFS.{Dataset, Property}
+  alias Zed.Beam.Release
 
   @doc "Execute a plan. Returns {:ok, results} or {:error, step, reason, partial}."
   def run(%Plan{steps: steps, dry_run: true}, _platform) do
-    results = Enum.map(steps, fn step -> {step.id, :would_execute} end)
-    {:ok, results}
+    steps
+    |> Enum.map(fn step -> {step.id, :would_execute} end)
+    |> then(&{:ok, &1})
   end
 
   def run(%Plan{steps: steps}, platform) do
-    Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, results} ->
+    steps
+    |> Enum.reduce_while({:ok, []}, fn step, {:ok, results} ->
       case execute_step(step, platform) do
-        :ok ->
-          {:cont, {:ok, [{step.id, :ok} | results]}}
-
-        {:ok, detail} ->
-          {:cont, {:ok, [{step.id, detail} | results]}}
-
-        {:error, reason} ->
-          {:halt, {:error, step, reason, results}}
+        :ok -> {:cont, {:ok, [{step.id, :ok} | results]}}
+        {:ok, detail} -> {:cont, {:ok, [{step.id, detail} | results]}}
+        {:error, reason} -> {:halt, {:error, step, reason, results}}
       end
     end)
   end
 
-  # --- Step Execution ---
+  # --- Step Execution (grouped by pattern) ---
 
   defp execute_step(%Step{type: :dataset, action: :create, args: args}, _platform) do
-    # Pool prefix is added by the convergence engine before we get here.
-    # The args.path is relative to pool, but we need the full path.
-    # For now, we trust the path includes the pool.
     pool_path = args[:pool_path] || args.path
 
     case Dataset.create(pool_path, args.properties) do
@@ -58,17 +53,25 @@ defmodule Zed.Converge.Executor do
   end
 
   defp execute_step(%Step{type: :app, action: :create, args: args}, _platform) do
-    # In Phase 1, we just set the version property.
-    # Full release unpack comes when Zed.Beam.Release is wired up.
-    ds = args[:dataset]
+    pool_path = args[:pool_path] || args[:dataset]
+    version = args.version |> to_string()
 
-    if ds do
-      pool_path = args[:pool_path] || ds
-      Property.set(pool_path, "version", to_string(args.version))
-      Property.set(pool_path, "app", to_string(args.app))
-      {:ok, :version_stamped}
-    else
-      :ok
+    with {:ok, deploy_detail} <- deploy_release(args, version),
+         :ok <- stamp_app_properties(pool_path, args, version) do
+      {:ok, deploy_detail}
+    end
+  end
+
+  defp execute_step(%Step{type: :service, action: :install, args: args}, platform) do
+    config = %{
+      command: Path.join([args.mountpoint, "current", "bin", args.service]),
+      user: args[:user] || args.service,
+      env_file: args[:env_file]
+    }
+
+    case platform.service_install(args.service, config) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:service_install_failed, args.service, reason}}
     end
   end
 
@@ -79,7 +82,83 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  defp execute_step(%Step{type: :jail, action: :install, args: args}, platform) do
+    config = %{
+      path: args.path,
+      hostname: args.hostname,
+      ip4: args.ip4,
+      ip6: args.ip6,
+      vnet: args.vnet
+    }
+
+    jail_name = args.jail |> to_string()
+
+    case platform.jail_install(jail_name, config) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:jail_install_failed, jail_name, reason}}
+    end
+  end
+
+  defp execute_step(%Step{type: :jail, action: :create, args: args}, platform) do
+    jail_name = args.jail |> to_string()
+
+    with :ok <- create_jail(jail_name, platform),
+         :ok <- stamp_jail_properties(args) do
+      {:ok, :jail_created}
+    end
+  end
+
   defp execute_step(%Step{} = step, _platform) do
     {:error, {:unknown_step, step.type, step.action}}
+  end
+
+  # --- Release Deployment Helpers ---
+
+  defp deploy_release(%{release_path: path, mountpoint: mp}, version)
+       when is_binary(path) and is_binary(mp) do
+    case Release.deploy(path, version, mp) do
+      {:ok, version_dir} -> {:ok, {:deployed, version_dir}}
+      {:error, reason} -> {:error, {:release_deploy_failed, reason}}
+    end
+  end
+
+  defp deploy_release(_args, _version), do: {:ok, :no_tarball}
+
+  # --- Property Stamping Helpers ---
+
+  defp stamp_app_properties(nil, _args, _version), do: :ok
+
+  defp stamp_app_properties(pool_path, args, version) do
+    pool_path |> Property.set("version", version)
+    pool_path |> Property.set("app", args.app |> to_string())
+    args[:node_name] |> maybe_set_property(pool_path, "node_name")
+    :ok
+  end
+
+  defp maybe_set_property(nil, _pool_path, _key), do: :ok
+  defp maybe_set_property(value, pool_path, key), do: Property.set(pool_path, key, to_string(value))
+
+  # --- Jail Helpers ---
+
+  defp create_jail(jail_name, platform) do
+    case platform.jail_create(jail_name, %{}) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:jail_create_failed, jail_name, reason}}
+    end
+  end
+
+  defp stamp_jail_properties(%{dataset: nil}), do: :ok
+
+  defp stamp_jail_properties(%{jail: jail_name, dataset: ds} = args) do
+    # Dataset should already have pool prefix from plan
+    pool_path = args[:pool_path] || ds
+
+    if pool_path do
+      pool_path |> Property.set("jail", to_string(jail_name))
+      pool_path |> Property.set("managed", "true")
+      args[:contains] |> maybe_set_property(pool_path, "contains")
+    end
+
+    :ok
   end
 end
