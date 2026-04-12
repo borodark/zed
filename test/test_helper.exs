@@ -1,1 +1,1 @@
-ExUnit.start()
+ExUnit.start(exclude: [:zfs_live])
