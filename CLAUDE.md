@@ -30,9 +30,9 @@ ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-val
 
 ## Test Suites
 
-- `mix test` — 24 unit tests (DSL, IR validation, plan ordering, jail generation). Run anywhere.
+- `mix test` — 37 unit tests (DSL, IR, plan, jail, agent, cluster). Run anywhere.
 - `mix test --include zfs_live` — 21 ZFS integration tests against real `jeff/zed-test`. Requires root + ZFS.
-- **Total**: 45 tests, 0 failures on both Linux and FreeBSD.
+- **Total**: 58 tests, 0 failures on both Linux and FreeBSD.
 
 ## DSL Example
 
@@ -102,10 +102,15 @@ Zed.Examples.JailDeploy.converge(dry_run: true)
 - [x] contains directive (app inside jail)
 - [ ] zone verb: zonecfg/zoneadm (illumos)
 
-### Phase 4 — multi-host
-- [ ] Agent GenServer + mDNS discovery
-- [ ] zfs send/receive cross-host
-- [ ] Coordinated converge with rollback
+### Phase 4 — multi-host (DONE)
+- [x] Agent GenServer (`lib/zed/agent.ex`)
+- [x] Cluster module for remote ops (`lib/zed/cluster.ex`)
+- [x] zfs send/receive wrapper (`lib/zed/zfs/replicate.ex`)
+- [x] Coordinated converge with rollback
+- [x] Test setup guide (`docs/MULTI_HOST_TEST.md`)
+- [x] Setup script (`scripts/setup-agent-jail.sh`)
+- [x] **Tested live**: plausible → zed-agent-1 converge worked!
+- [ ] mDNS discovery (manual node list works for now)
 
 ### Phase 5 — cluster + polish
 - [ ] cluster verb (distributed Erlang)
