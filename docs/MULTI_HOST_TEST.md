@@ -2,6 +2,10 @@
 
 Testing Zed's distributed deployment across multiple FreeBSD jails on TrueNAS.
 
+
+<img width="3162" height="840" alt="image" src="https://github.com/user-attachments/assets/1579577c-74c6-4678-8f9a-9740f33cc935" />
+
+
 ## Architecture
 
 ```
