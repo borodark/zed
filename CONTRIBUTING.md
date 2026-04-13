@@ -14,6 +14,16 @@ PRs are welcome!
 - [ ] `zone` verb (zonecfg/zoneadm)
 - [ ] illumos-specific testing
 
+### Phase 7 — GPU Cluster (Vision)
+- [ ] `node` verb for hardware capability declaration
+- [ ] GPU detection (nvidia-smi, Metal, ROCm)
+- [ ] `model` verb for ML artifact tracking
+- [ ] `job` verb for distributed job state
+- [ ] Checkpoint as ZFS snapshot
+- [ ] Smart routing (match model requirements to node capabilities)
+- [ ] Linux + OpenZFS support
+- [ ] See [docs/gpu-cluster.md](docs/gpu-cluster.md)
+
 ### Improvements
 - [ ] mDNS/DNS-SD agent discovery
 - [ ] Web dashboard (LiveView?)

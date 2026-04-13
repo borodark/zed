@@ -80,6 +80,38 @@ Zed.Cluster.converge_all(ir)
 Zed.Cluster.converge_coordinated(ir)
 ```
 
+## Future: GPU Cluster
+
+ZFS + Erlang distribution = distributed ML without MLflow/DVC/K8s.
+
+```elixir
+deploy :gpu_cluster, pool: "tank" do
+  node :workstation do
+    gpu "RTX 4090", vram: 24
+  end
+
+  model :llama70b do
+    dataset "models/llama-70b"
+    requires vram: 48
+  end
+
+  job :finetune do
+    model :llama70b
+    checkpoint_every "1 epoch"  # checkpoint = zfs snapshot
+  end
+end
+```
+
+```
+Model versioning?    zfs snapshot
+Model distribution?  zfs send/receive
+Experiment tracking? ZFS properties (com.zed:loss=0.0023)
+Checkpoint/resume?   Snapshots travel to any node
+Rollback bad run?    zfs rollback (O(1))
+```
+
+See [docs/gpu-cluster.md](docs/gpu-cluster.md) for the full vision.
+
 ## Installation
 
 ```sh
@@ -114,6 +146,7 @@ mix test --include zfs_live   # + 21 ZFS integration tests
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
 - [CLAUDE.md](CLAUDE.md) — Project context and architecture
 - [docs/MULTI_HOST_TEST.md](docs/MULTI_HOST_TEST.md) — Multi-host test setup
+- [docs/gpu-cluster.md](docs/gpu-cluster.md) — GPU cluster vision
 - [docs/pitches.md](docs/pitches.md) — Why ZFS properties replace etcd
 - [docs/market.md](docs/market.md) — Market analysis
 - [docs/BLOG_ZED_MANIFESTO.md](docs/BLOG_ZED_MANIFESTO.md) — The manifesto
@@ -136,7 +169,8 @@ DSL (macros) → IR (validated) → Converge (diff→plan→execute) → ZFS
 |-------|--------|---------------|
 | 5 | Next | `cluster` verb, secrets, Burrito builds |
 | 6 | Planned | illumos parity (SMF, zones) |
-| 7 | Ideas | mDNS discovery, web dashboard, metrics |
+| 7 | Vision | GPU cluster: `node`, `model`, `job` verbs |
+| 8 | Ideas | mDNS discovery, web dashboard, metrics |
 
 ### Good First Issues
 - Add more health check types (TCP, HTTP)
