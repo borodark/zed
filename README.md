@@ -4,7 +4,7 @@ Declarative BEAM application deployment on FreeBSD and illumos, using ZFS as the
 
 ## The Idea
 
-ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-value store that travels with snapshots and `zfs send/receive`. This replaces etcd, consul, and state files entirely. **The deployment state IS the filesystem metadata.**
+ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-value store that travels with snapshots and `zfs send/receive`. No external state store required — **the deployment state IS the filesystem metadata.**
 
 ## Why
 
