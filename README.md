@@ -6,6 +6,26 @@ Declarative BEAM application deployment on FreeBSD and illumos, using ZFS as the
 
 ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-value store that travels with snapshots and `zfs send/receive`. This replaces etcd, consul, and state files entirely. **The deployment state IS the filesystem metadata.**
 
+## Why
+
+**~85% of companies with servers run ≤50 nodes.** They don't need Kubernetes. They need something that works.
+
+| Traditional Stack | Zed |
+|-------------------|-----|
+| etcd/consul cluster (3-5 nodes) | ZFS properties (zero infra) |
+| Terraform state in S3 | State IS the filesystem |
+| Ansible/Chef/Puppet | Elixir DSL, compile-time validated |
+| Container runtime + orchestrator | FreeBSD jails (kernel feature) |
+| 10+ tools to learn | One tool, ~2000 lines |
+
+```
+Rollback with K8s:        Rollback with Zed:
+  kubectl rollout undo      zfs rollback tank/app@v1
+  (hope state matches)      (data + state, atomic, O(1))
+```
+
+Zed trades global coordination for local simplicity. Each host is authoritative for its own state. That's a feature when your failure domain is per-host anyway.
+
 ## Features
 
 - **DSL** — Elixir macros for declaring infrastructure
@@ -91,9 +111,12 @@ mix test --include zfs_live   # + 21 ZFS integration tests
 
 ## Documentation
 
+- [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
 - [CLAUDE.md](CLAUDE.md) — Project context and architecture
 - [docs/MULTI_HOST_TEST.md](docs/MULTI_HOST_TEST.md) — Multi-host test setup
-- [docs/BLOG_ZED_MANIFESTO.md](docs/BLOG_ZED_MANIFESTO.md) — Why we built this
+- [docs/pitches.md](docs/pitches.md) — Why ZFS properties replace etcd
+- [docs/market.md](docs/market.md) — Market analysis
+- [docs/BLOG_ZED_MANIFESTO.md](docs/BLOG_ZED_MANIFESTO.md) — The manifesto
 
 ## Architecture
 
@@ -103,6 +126,24 @@ DSL (macros) → IR (validated) → Converge (diff→plan→execute) → ZFS
                               Agent ←──:rpc.call──→ Cluster
 ```
 
+## Contributing
+
+**PRs are welcome!** See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Roadmap
+
+| Phase | Status | What's Needed |
+|-------|--------|---------------|
+| 5 | Next | `cluster` verb, secrets, Burrito builds |
+| 6 | Planned | illumos parity (SMF, zones) |
+| 7 | Ideas | mDNS discovery, web dashboard, metrics |
+
+### Good First Issues
+- Add more health check types (TCP, HTTP)
+- Improve error messages
+- More examples in `lib/zed/examples/`
+- Documentation improvements
+
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE)
