@@ -1,19 +1,11 @@
 # Social Media Posts
 
-## Twitter/X (280 chars)
+## Twitter/X (140 chars)
 
 ```
-ZFS has been hiding a superpower: user properties.
+ZFS properties = deployment state that travels with snapshots. No external DB needed.
 
-com.zed:version=1.4.2
-
-It's a replicated KV store. It travels with snapshots. It IS your deployment state.
-
-We just wrote the DSL to use it.
-
-Zed: because your filesystem was a database all along.
-
-github.com/[repo]
+https://github.com/borodark/zed
 ```
 
 ---
@@ -21,16 +13,16 @@ github.com/[repo]
 ## Bluesky (300 chars)
 
 ```
-Everyone's building databases on top of filesystems.
+What if your filesystem already knew what was deployed?
 
-ZFS: "I literally AM a database."
+ZFS user properties:
+- Key-value store in metadata
+- Replicate with snapshots
+- Travel with zfs send/receive
 
-- User properties = key-value store
-- Snapshots = consistent state
-- zfs send/recv = replication
-- Rollback = O(1), atomic
+Zed: an Elixir DSL that finally uses them.
 
-Zed is just an Elixir DSL that finally listens to what ZFS has been saying for 20 years.
+https://github.com/borodark/zed
 ```
 
 ---
@@ -38,18 +30,14 @@ Zed is just an Elixir DSL that finally listens to what ZFS has been saying for 2
 ## LinkedIn
 
 ```
-For 20 years, ZFS has been trying to tell us something. We weren't listening.
+What if your filesystem already knew what was deployed to it?
 
-"I have user properties."
-"They replicate with snapshots."
-"They travel with zfs send/receive."
-"I am literally a transactional, replicated key-value store."
+ZFS has had user properties since 2005. They're a key-value store that:
+- Lives in filesystem metadata
+- Replicates with snapshots
+- Travels with zfs send/receive
 
-We built etcd instead. And consul. And stored Terraform state in S3. And invented 47 ways to track "what version is deployed where" — all while sitting on a filesystem that already knew.
-
-Zed is an apology to ZFS.
-
-It's an Elixir DSL that treats ZFS as what it actually is: the deployment database.
+We just... weren't using them.
 
 $ zfs get all tank/apps/trading | grep com.zed
 
@@ -57,17 +45,21 @@ com.zed:version      1.4.2
 com.zed:deployed_at  2024-04-12T19:25:00Z
 com.zed:managed      true
 
-Snapshot = backup of data AND state
-Replicate = data AND state travel together
-Rollback = atomic, O(1), no reconciliation
+That's your deployment state. No external database. No state file in S3. No cluster to maintain.
 
-The deployment state IS the filesystem metadata. There is no drift because there is no separate state.
+Snapshot your app? State comes with it.
+Replicate to another host? State arrives intact.
+Rollback? Atomic, O(1). Data and state together.
 
-We didn't invent anything. We just stopped ignoring what ZFS has been offering since 2005.
+We built Zed — an Elixir DSL that treats ZFS as what it quietly always was: a transactional, replicated state store.
 
-~2,000 lines of Elixir. Apache 2.0. PRs welcome.
+~2,000 lines of code. Apache 2.0. Works today on FreeBSD.
 
-(Especially from the illumos/SmartOS crowd — you understood this before anyone.)
+Next up: GPU cluster support. Imagine ML checkpoints as ZFS snapshots. Model distribution via zfs send. Training state in filesystem properties. No MLflow, no DVC — just the filesystem you already have.
 
-#zfs #elixir #freebsd #illumos #opensource #devops
+If you're running BEAM apps on FreeBSD or illumos, or you're curious about ZFS beyond "nice checksums," take a look.
+
+PRs welcome. Especially from the illumos/SmartOS folks who understood this before anyone.
+
+#zfs #elixir #freebsd #opensource #devops #mlops
 ```
