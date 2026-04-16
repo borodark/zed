@@ -146,6 +146,7 @@ mix test --include zfs_live   # + 21 ZFS integration tests
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
 - [CLAUDE.md](CLAUDE.md) — Project context and architecture
 - [docs/MULTI_HOST_TEST.md](docs/MULTI_HOST_TEST.md) — Multi-host test setup
+- [docs/SECRETS_DESIGN.md](docs/SECRETS_DESIGN.md) — Phase 5 secrets pipeline (design proposal)
 - [docs/gpu-cluster.md](docs/gpu-cluster.md) — GPU cluster vision
 - [docs/pitches.md](docs/pitches.md) — Why ZFS properties replace etcd
 - [docs/market.md](docs/market.md) — Market analysis
