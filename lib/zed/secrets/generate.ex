@@ -58,6 +58,62 @@ defmodule Zed.Secrets.Generate do
   end
 
   @doc """
+  Self-signed TLS cert + key (RSA-2048), returned as PEM binaries.
+
+  Shells out to `openssl req -x509 ...` because Erlang's `:public_key`
+  primitives for X.509 certificate construction require assembling OTP
+  ASN.1 records by hand — lots of ceremony for what is meant to be a
+  first-boot placeholder cert. The self-signed cert gets replaced by
+  an ACME-issued one in a later iteration, so this path is
+  deliberately minimal.
+
+  Options:
+    - `:cn` (default `"zed-web"`): Subject common name.
+    - `:days` (default `365`): validity in days.
+
+  Raises if the `openssl` binary is unavailable or invocation fails —
+  caller is `Zed.Bootstrap` which surfaces it as `{:error, :generate_failed, ...}`.
+  """
+  def selfsigned_tls(opts \\ []) do
+    cn = Keyword.get(opts, :cn, "zed-web")
+    days = Keyword.get(opts, :days, 365)
+
+    openssl = System.find_executable("openssl") || raise "openssl binary not found on PATH"
+
+    tmp_dir = Path.join(System.tmp_dir!(), "zed-tls-gen-#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(tmp_dir)
+    cert_path = Path.join(tmp_dir, "cert.pem")
+    key_path = Path.join(tmp_dir, "key.pem")
+
+    try do
+      {_, 0} =
+        System.cmd(
+          openssl,
+          [
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-days",
+            to_string(days),
+            "-nodes",
+            "-subj",
+            "/CN=#{cn}",
+            "-keyout",
+            key_path,
+            "-out",
+            cert_path
+          ],
+          stderr_to_stdout: true
+        )
+
+      %{cert: File.read!(cert_path), key: File.read!(key_path)}
+    after
+      File.rm_rf!(tmp_dir)
+    end
+  end
+
+  @doc """
   Random passphrase suitable for humans to store in a password manager.
 
   16 bytes of randomness, base64url without padding (≈22 characters,
@@ -93,6 +149,8 @@ defmodule Zed.Secrets.Generate do
   end
 
   def by_algo(:ed25519, _opts), do: {:ok, ed25519()}
+
+  def by_algo(:selfsigned_tls, opts), do: {:ok, selfsigned_tls(opts)}
 
   def by_algo(other, _opts), do: {:error, {:unknown_algo, other}}
 end

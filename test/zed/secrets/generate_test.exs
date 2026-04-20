@@ -68,6 +68,31 @@ defmodule Zed.Secrets.GenerateTest do
     end
   end
 
+  describe "selfsigned_tls/1" do
+    @describetag :needs_openssl
+
+    test "produces a decodable cert + key PEM pair" do
+      %{cert: cert, key: key} = Generate.selfsigned_tls(days: 1, cn: "unittest")
+
+      assert cert =~ "-----BEGIN CERTIFICATE-----"
+      assert cert =~ "-----END CERTIFICATE-----"
+      assert key =~ "-----BEGIN PRIVATE KEY-----" or key =~ "-----BEGIN RSA PRIVATE KEY-----"
+
+      entries = :public_key.pem_decode(cert)
+
+      assert Enum.any?(entries, fn
+               {:Certificate, _der, _} -> true
+               _ -> false
+             end)
+    end
+
+    test "fingerprint helper returns sha256:<hex>" do
+      %{cert: cert} = Generate.selfsigned_tls(days: 1)
+      fp = Zed.Bootstrap.cert_der_fingerprint(cert)
+      assert fp =~ ~r/^sha256:[0-9a-f]{64}$/
+    end
+  end
+
   describe "random_passphrase/1" do
     test "default length is 16 bytes (22 chars base64url)" do
       assert byte_size(Generate.random_passphrase()) == 22

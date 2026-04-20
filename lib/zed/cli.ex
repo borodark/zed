@@ -14,7 +14,9 @@ defmodule Zed.CLI do
           base: :string,
           mountpoint: :string,
           slot: :string,
-          admin_passwd: :string
+          admin_passwd: :string,
+          port: :integer,
+          bind: :string
         ],
         aliases: [n: :dry_run, v: :verbose, t: :target, m: :module, b: :base]
       )
@@ -30,6 +32,7 @@ defmodule Zed.CLI do
       ["bootstrap", "verify"] -> cmd_bootstrap_verify(opts)
       ["bootstrap", "rotate"] -> cmd_bootstrap_rotate(opts)
       ["bootstrap", "export-pubkey"] -> cmd_bootstrap_export_pubkey(opts)
+      ["serve"] -> cmd_serve(opts)
       _ -> print_usage()
     end
   end
@@ -209,6 +212,7 @@ defmodule Zed.CLI do
     pubs =
       Enum.flat_map(banner, fn
         {slot, :pubkey_b64, b64} -> [{"#{slot} pubkey", b64}]
+        {slot, :cert_fingerprint, fp} -> [{"#{slot} cert fingerprint", fp}]
         _ -> []
       end)
 
@@ -227,6 +231,75 @@ defmodule Zed.CLI do
     pad_len = max(width - String.length(str), 0)
     str <> String.duplicate(" ", pad_len)
   end
+
+  # --- serve ---
+
+  defp cmd_serve(opts) do
+    base = require_base!(opts)
+    Application.put_env(:zed, :base, base)
+
+    port = Keyword.get(opts, :port, 4040)
+    bind = Keyword.get(opts, :bind, "127.0.0.1")
+
+    bind_ip =
+      case bind |> String.split(".") |> Enum.map(&Integer.parse/1) do
+        [{a, ""}, {b, ""}, {c, ""}, {d, ""}] -> {a, b, c, d}
+        _ -> {127, 0, 0, 1}
+      end
+
+    secret_key_base =
+      System.get_env("ZED_SECRET_KEY_BASE") ||
+        (
+          IO.puts(
+            "warning: ZED_SECRET_KEY_BASE not set; generating an ephemeral one. Sessions won't survive restart."
+          )
+
+          :crypto.strong_rand_bytes(64) |> Base.encode64()
+        )
+
+    tls_cert = System.get_env("ZED_TLS_CERT")
+    tls_key = System.get_env("ZED_TLS_KEY")
+
+    endpoint_opts =
+      [
+        secret_key_base: secret_key_base,
+        server: true,
+        url: [host: System.get_env("ZED_WEB_HOST") || "localhost", port: port]
+      ]
+
+    endpoint_opts =
+      if tls_cert && tls_key && File.exists?(tls_cert) && File.exists?(tls_key) do
+        Keyword.put(endpoint_opts, :https,
+          ip: bind_ip,
+          port: port,
+          certfile: tls_cert,
+          keyfile: tls_key,
+          otp_app: :zed
+        )
+      else
+        IO.puts("note: running on plain HTTP (no ZED_TLS_CERT/ZED_TLS_KEY set)")
+        Keyword.put(endpoint_opts, :http, ip: bind_ip, port: port)
+      end
+
+    merged =
+      :zed
+      |> Application.get_env(ZedWeb.Endpoint, [])
+      |> Keyword.merge(endpoint_opts)
+
+    Application.put_env(:zed, ZedWeb.Endpoint, merged)
+
+    children = [ZedWeb.Endpoint]
+
+    {:ok, _pid} = Supervisor.start_link(children, strategy: :one_for_one, name: Zed.WebSupervisor)
+
+    IO.puts("zed-web serving on #{bind}:#{port} (base=#{base})")
+    IO.puts("  admin login: #{scheme(tls_cert, tls_key)}://#{bind}:#{port}/admin/login")
+
+    Process.sleep(:infinity)
+  end
+
+  defp scheme(cert, key) when is_binary(cert) and is_binary(key), do: "https"
+  defp scheme(_, _), do: "http"
 
   # --- existing ---
 
@@ -268,6 +341,8 @@ defmodule Zed.CLI do
       bootstrap rotate           (not yet implemented in A1)
       bootstrap export-pubkey    Print base64 pubkey for a keypair slot
 
+      serve                      Start zed-web admin UI (LiveView on a port)
+
     Options:
       -m, --module MODULE        Deployment module (e.g., MyInfra.Trading)
       -n, --dry-run              Show what would happen without applying
@@ -277,9 +352,13 @@ defmodule Zed.CLI do
       --mountpoint PATH          Override <base>/zed/secrets mountpoint
       --slot NAME                Slot name for bootstrap export-pubkey
       --admin-passwd STRING      Supply admin password (or auto-generate)
+      --port N                   Port for zed serve (default 4040)
+      --bind ADDR                Bind address for zed serve (default 127.0.0.1)
 
     Environment:
       ZED_BOOTSTRAP_PASSPHRASE   Passphrase for encrypted secrets dataset
+      ZED_SECRET_KEY_BASE        Phoenix session signing key (serve)
+      ZED_TLS_CERT, ZED_TLS_KEY  PEM paths for HTTPS (serve); HTTP if unset
     """)
   end
 end

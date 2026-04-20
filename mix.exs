@@ -11,20 +11,38 @@ defmodule Zed.MixProject do
       start_permanent: Mix.env() == :prod,
       escript: [main_module: Zed.CLI],
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
       description: "Declarative BEAM deployment on ZFS. FreeBSD and illumos."
     ]
   end
 
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   def application do
     [
-      extra_applications: [:logger, :crypto, :inets],
+      extra_applications: [:logger, :crypto, :inets, :public_key, :ssl],
       mod: {Zed.Application, []}
     ]
   end
 
   defp deps do
     [
-      {:propcheck, "~> 1.4", only: :test, runtime: false}
+      # Web layer (A2a). Phoenix endpoint is not supervised by default —
+      # Zed.Application leaves it out. `zed serve` starts it under its
+      # own supervisor. This keeps one-shot CLI verbs (bootstrap init,
+      # status, ...) free of web-process overhead.
+      {:phoenix, "~> 1.7.17"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_html, "~> 4.0"},
+      {:bandit, "~> 1.5"},
+      {:plug, "~> 1.15"},
+      {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"},
+
+      # Test
+      {:propcheck, "~> 1.4", only: :test, runtime: false},
+      {:floki, "~> 0.36", only: :test}
     ]
   end
 end

@@ -8,12 +8,14 @@ defmodule Zed.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Starts a worker by calling: Zed.Worker.start_link(arg)
-      # {Zed.Worker, arg}
+      # Phoenix PubSub is always started so LiveView can run in tests
+      # without the endpoint. The endpoint itself is NOT supervised
+      # here — `zed serve` starts it under its own supervisor, so that
+      # one-shot verbs (bootstrap init, status, etc.) do not pay the
+      # cost of a listening socket.
+      {Phoenix.PubSub, name: Zed.PubSub}
     ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Zed.Supervisor]
     Supervisor.start_link(children, opts)
   end
