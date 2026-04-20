@@ -58,15 +58,17 @@ Valuable for `zed` proper regardless of whether NAS ever materialises. This is t
 **Scope:** install-time generation of zed's own secrets, three-tier storage (encrypted dataset + fingerprint properties + archive).
 
 **Deliverable:**
-- `Zed.Bootstrap.init/2` — create `<pool>/zed` and `<pool>/zed/secrets` (encrypted, `canmount=noauto`), generate missing slots, stamp fingerprints, snapshot.
+- `Zed.Bootstrap.init/2` — accepts `--base <dataset>` (not `--pool`); creates `<base>/zed` and `<base>/zed/secrets` (encrypted, `canmount=noauto`), generates missing slots, stamps fingerprints, snapshots. Production default: `--base <pool>` (e.g. `jeff`); tests pass `--base jeff/zed-test/<uuid>`.
 - `Zed.Bootstrap.status/1` — list slots with fingerprint, age, file-present check.
 - `Zed.Bootstrap.rotate/2` — regenerate a single slot, archive old value, update consumers.
 - `Zed.Bootstrap.verify/1` — recompute fingerprints, detect drift, surface silent fatals.
-- CLI: `zed bootstrap {init | status | rotate | verify | export-pubkey}`.
+- CLI: `zed bootstrap {init | status | rotate | verify | export-pubkey} --base <dataset>`.
 - Slot catalog for A1 (zed's own secrets, not NAS-specific):
   - `beam_cookie` (random-256)
   - `admin_passwd` (argon2id hash; plaintext shown once)
   - `ssh_host_ed25519` (keypair; pubkey exportable)
+
+**Why `--base`, not `--pool`:** the jail delegation (`jeff/zed-test` only) cannot create siblings at `jeff/*`, so tests cannot use a real pool root. Parametrising on an arbitrary parent dataset makes tests trivially isolatable (every test gets its own UUID subtree) and keeps the production path identical — production simply passes the pool name as the base. See A1 prep notes in `execution-plan.md`.
 
 **Effort:** 1.0 pm.
 **Depends on:** A0.

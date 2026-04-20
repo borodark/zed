@@ -89,10 +89,12 @@ git pull --rebase
 ### A1 — `feat/a1-bootstrap` (jail)
 - Author on dev host for IDE comfort, push, develop iteratively in jail.
 - New: `lib/zed/bootstrap.ex`, `lib/zed/secrets/catalog.ex`, `lib/zed/secrets/generate.ex`.
-- New CLI verb in `lib/zed/cli.ex`: `bootstrap {init|status|rotate|verify|export-pubkey}`.
+- New CLI verb in `lib/zed/cli.ex`: `bootstrap {init|status|rotate|verify|export-pubkey} --base <dataset>`.
 - Tests: `test/zed/bootstrap/integration_test.exs` tagged `:zfs_live`.
-- **Jail prep:** ensure `jeff/zed-bootstrap-test` dataset exists and is deletable; tests clean up via `zfs destroy -r`.
-- **Required ZFS features:** `keyformat=passphrase` needs pool feature `encryption`. Verify on jail: `zpool get feature@encryption jeff`.
+- **`--base`, not `--pool`** (decision 2026-04-19). Bootstrap creates `<base>/zed` + `<base>/zed/secrets` under any parent dataset, not only a pool root. Production passes `--base jeff`; tests pass `--base jeff/zed-test/<uuid>`. Same code path either way.
+- **Jail prep (completed 2026-04-19):** `jeff/zed-test` is delegated; `jeff/zed-test/bootstrap` placeholder exists; encrypted-dataset probe (`jeff/zed-test/enc-probe` with `encryption=aes-256-gcm`, `keyformat=passphrase`) succeeded and was destroyed. Tests may freely create children under `jeff/zed-test/*` and clean up via `zfs destroy -r`.
+- **Existing collision:** `jeff/zed-test/converge-test` is used by Phase 3 integration tests (`test/zed/zfs/integration_test.exs`). A1 integration tests must use a different subtree — `jeff/zed-test/bootstrap-test/<uuid>` is safe.
+- **Cannot verify pool-level feature flags from inside jail** (`zpool get ...` is host-only). Rely on the successful probe as evidence that encryption is supported. Pool-level feature enablement is a host concern, not an A1 concern.
 - Merge: jail tests green → push → merge.
 
 ### A2a — `feat/a2a-zed-web` (dev host, deploy-test in jail)
@@ -186,10 +188,10 @@ git pull --rebase
 
 ---
 
-## Immediate next actions (after plan sign-off)
+## Immediate next actions
 
-1. **Commit the two spec files** (`iteration-plan.md`, `execution-plan.md`) to `main` on dev host. Push.
-2. **Pull on jail.** Confirm both files visible.
-3. **Create `jeff/zed-bootstrap-test` dataset** on jail (for A1 integration tests). Verify `zfs get feature@encryption jeff` returns enabled.
+1. ~~Commit spec files~~ — done 2026-04-19 (`2d207e6`).
+2. ~~Pull on jail~~ — done 2026-04-19.
+3. ~~Jail ZFS prep~~ — done 2026-04-19. Delegation confirmed, encrypted-dataset probe succeeded under `jeff/zed-test/*`. `--base` parametrisation adopted; no pool-root access required.
 4. **Start A0 on dev host** (`feat/a0-storage-field` branch, 0.1 pm). No jail involvement.
-5. **At A0 merge:** kick off A1 on jail.
+5. **At A0 merge:** kick off A1 on jail using `--base jeff/zed-test/bootstrap-test/<uuid>` in integration tests.
