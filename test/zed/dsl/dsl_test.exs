@@ -153,6 +153,69 @@ defmodule Zed.DSLTest do
       assert jail.deps == [:web]
     end
 
+    test "DSL compiles with :secret cookie reference" do
+      defmodule SecretRefCompile do
+        use Zed.DSL
+
+        deploy :sref, pool: "tank" do
+          dataset "apps/web" do
+            mountpoint "/opt/web"
+          end
+
+          app :web do
+            dataset "apps/web"
+            version "1.0.0"
+            cookie {:secret, :beam_cookie}
+          end
+        end
+      end
+
+      [app] = SecretRefCompile.__zed_ir__().apps
+      assert app.config.cookie == {:secret, :beam_cookie}
+    end
+
+    test "DSL compilation fails with unknown secret slot" do
+      assert_raise Zed.ValidationError, ~r/unknown secret slot :ghost_slot/, fn ->
+        defmodule SecretRefBadSlot do
+          use Zed.DSL
+
+          deploy :bad, pool: "tank" do
+            dataset "apps/web" do
+              mountpoint "/opt/web"
+            end
+
+            app :web do
+              dataset "apps/web"
+              version "1.0.0"
+              cookie {:secret, :ghost_slot}
+            end
+          end
+        end
+      end
+    end
+
+    test "DSL compilation fails with pending storage mode (Layer D6)" do
+      assert_raise Zed.ValidationError,
+                   ~r/probnik_vault is not yet implemented, pending Layer D6/,
+                   fn ->
+                     defmodule SecretRefPendingStorage do
+                       use Zed.DSL
+
+                       deploy :pending, pool: "tank" do
+                         dataset "apps/web" do
+                           mountpoint "/opt/web"
+                         end
+
+                         app :web do
+                           dataset "apps/web"
+                           version "1.0.0"
+                           cookie {:secret, :beam_cookie, :value, storage: :probnik_vault}
+                         end
+                       end
+                     end
+                   end
+    end
+
     test "generated functions exist" do
       defmodule FuncCheck do
         use Zed.DSL

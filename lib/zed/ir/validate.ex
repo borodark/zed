@@ -6,6 +6,7 @@ defmodule Zed.IR.Validate do
   """
 
   alias Zed.IR
+  alias Zed.Secrets.Catalog
 
   @doc "Validate the IR, raising on errors."
   def run!(%IR{} = ir) do
@@ -13,6 +14,7 @@ defmodule Zed.IR.Validate do
     check_dataset_refs(ir)
     check_jail_contains(ir)
     check_no_inline_secrets(ir)
+    check_secret_refs(ir)
     ir
   end
 
@@ -49,7 +51,8 @@ defmodule Zed.IR.Validate do
     end)
   end
 
-  # Cookies must never be inline strings — only {:env, "VAR"} or {:file, path}.
+  # Cookies must never be inline strings — only {:env, "VAR"}, {:file, path},
+  # or a {:secret, ...} reference validated by `check_secret_refs/1`.
   defp check_no_inline_secrets(%IR{} = ir) do
     Enum.each(ir.apps, fn app ->
       cookie = app.config[:cookie]
@@ -58,15 +61,91 @@ defmodule Zed.IR.Validate do
         nil -> :ok
         {:env, _} -> :ok
         {:file, _} -> :ok
+        {:secret, _} -> :ok
+        {:secret, _, _} -> :ok
+        {:secret, _, _, _} -> :ok
         s when is_binary(s) ->
           raise Zed.ValidationError,
-                "app #{inspect(app.id)} has an inline cookie string — use {:env, \"VAR\"} instead"
+                "app #{inspect(app.id)} has an inline cookie string — use {:env, \"VAR\"}, {:file, path}, or {:secret, :slot} instead"
         s when is_atom(s) ->
           raise Zed.ValidationError,
-                "app #{inspect(app.id)} has an inline cookie atom — use {:env, \"VAR\"} instead"
+                "app #{inspect(app.id)} has an inline cookie atom — use {:env, \"VAR\"}, {:file, path}, or {:secret, :slot} instead"
         _ -> :ok
       end
     end)
+  end
+
+  # Every {:secret, slot, field, opts} reference must name a known slot,
+  # a valid field for that slot, and (if `storage:` is given) a legal
+  # storage mode. Future storage modes recognized but not yet
+  # implemented fail with a pointer to the layer that will ship them.
+  defp check_secret_refs(%IR{} = ir) do
+    Enum.each(ir.apps, fn app ->
+      Enum.each(app.config, fn {config_key, value} ->
+        case classify_secret_ref(value) do
+          :not_a_secret_ref -> :ok
+          {:secret_ref, slot, field, opts} ->
+            validate_secret_ref!(slot, field, opts, app.id, config_key)
+        end
+      end)
+    end)
+  end
+
+  defp classify_secret_ref({:secret, slot}), do: {:secret_ref, slot, :value, []}
+  defp classify_secret_ref({:secret, slot, field}), do: {:secret_ref, slot, field, []}
+  defp classify_secret_ref({:secret, slot, field, opts}) when is_list(opts),
+    do: {:secret_ref, slot, field, opts}
+  defp classify_secret_ref(_), do: :not_a_secret_ref
+
+  defp validate_secret_ref!(slot, field, opts, app_id, config_key) do
+    check_slot_known!(slot, app_id, config_key)
+    check_field_valid!(slot, field, app_id, config_key)
+    check_storage_mode!(Keyword.get(opts, :storage, :local_file), slot, app_id, config_key)
+    :ok
+  end
+
+  defp check_slot_known!(slot, app_id, config_key) when is_atom(slot) do
+    if Catalog.slot_known?(slot) do
+      :ok
+    else
+      raise Zed.ValidationError,
+            "app #{inspect(app_id)} #{inspect(config_key)}: unknown secret slot #{inspect(slot)} (known: #{inspect(Catalog.slots())})"
+    end
+  end
+
+  defp check_slot_known!(slot, app_id, config_key) do
+    raise Zed.ValidationError,
+          "app #{inspect(app_id)} #{inspect(config_key)}: secret slot must be an atom, got #{inspect(slot)}"
+  end
+
+  defp check_field_valid!(slot, field, app_id, config_key) when is_atom(field) do
+    if Catalog.field_valid?(slot, field) do
+      :ok
+    else
+      raise Zed.ValidationError,
+            "app #{inspect(app_id)} #{inspect(config_key)}: slot #{inspect(slot)} has no field #{inspect(field)} (valid fields: #{inspect(Catalog.fields(slot))})"
+    end
+  end
+
+  defp check_field_valid!(_slot, field, app_id, config_key) do
+    raise Zed.ValidationError,
+          "app #{inspect(app_id)} #{inspect(config_key)}: secret field must be an atom, got #{inspect(field)}"
+  end
+
+  defp check_storage_mode!(mode, slot, app_id, config_key) do
+    cond do
+      Catalog.storage_implemented?(mode) ->
+        :ok
+
+      Catalog.storage_known?(mode) ->
+        layer = Catalog.storage_pending_layer(mode)
+        raise Zed.ValidationError,
+              "app #{inspect(app_id)} #{inspect(config_key)} slot #{inspect(slot)}: storage mode #{inspect(mode)} is not yet implemented, pending Layer #{layer}"
+
+      true ->
+        raise Zed.ValidationError,
+              "app #{inspect(app_id)} #{inspect(config_key)} slot #{inspect(slot)}: unknown storage mode #{inspect(mode)} (implemented: #{inspect(Catalog.implemented_storage())})"
+    end
   end
 end
 

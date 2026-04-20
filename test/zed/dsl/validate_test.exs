@@ -124,4 +124,113 @@ defmodule Zed.IR.ValidateTest do
       assert Validate.run!(ir) == ir
     end
   end
+
+  describe "secret references (A0)" do
+    defp ir_with_cookie(cookie) do
+      %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [
+          %Node{id: :web, type: :app, config: %{cookie: cookie}}
+        ]
+      }
+    end
+
+    test "accepts {:secret, slot} shorthand with default field :value" do
+      ir = ir_with_cookie({:secret, :beam_cookie})
+      assert Validate.run!(ir) == ir
+    end
+
+    test "accepts {:secret, slot, field} when field is valid" do
+      ir = ir_with_cookie({:secret, :ssh_host_ed25519, :priv})
+      assert Validate.run!(ir) == ir
+    end
+
+    test "accepts {:secret, slot, field, storage: :local_file}" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :value, storage: :local_file})
+      assert Validate.run!(ir) == ir
+    end
+
+    test "accepts {:secret, slot, field, []} — empty opts defaults to :local_file" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :value, []})
+      assert Validate.run!(ir) == ir
+    end
+
+    test "rejects unknown slot with list of known slots in message" do
+      ir = ir_with_cookie({:secret, :ghost_slot})
+
+      assert_raise Zed.ValidationError, ~r/unknown secret slot :ghost_slot/, fn ->
+        Validate.run!(ir)
+      end
+
+      assert_raise Zed.ValidationError, ~r/beam_cookie/, fn ->
+        Validate.run!(ir)
+      end
+    end
+
+    test "rejects invalid field for a known slot" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :ghost_field})
+
+      assert_raise Zed.ValidationError,
+                   ~r/slot :beam_cookie has no field :ghost_field/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects keypair slot accessed as :value" do
+      ir = ir_with_cookie({:secret, :ssh_host_ed25519, :value})
+
+      assert_raise Zed.ValidationError,
+                   ~r/no field :value/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects pending storage mode :probnik_vault with Layer D6 pointer" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :value, storage: :probnik_vault})
+
+      assert_raise Zed.ValidationError,
+                   ~r/probnik_vault is not yet implemented, pending Layer D6/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects pending storage mode :probnik_vault_pair with Layer D6 pointer" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :value, storage: :probnik_vault_pair})
+
+      assert_raise Zed.ValidationError,
+                   ~r/probnik_vault_pair is not yet implemented, pending Layer D6/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects pending storage mode :shamir_k_of_n with Layer D7 pointer" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :value, storage: :shamir_k_of_n})
+
+      assert_raise Zed.ValidationError,
+                   ~r/shamir_k_of_n is not yet implemented, pending Layer D7/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects entirely unknown storage mode" do
+      ir = ir_with_cookie({:secret, :beam_cookie, :value, storage: :smoke_signals})
+
+      assert_raise Zed.ValidationError,
+                   ~r/unknown storage mode :smoke_signals/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects non-atom slot name" do
+      ir = ir_with_cookie({:secret, "beam_cookie"})
+
+      assert_raise Zed.ValidationError,
+                   ~r/secret slot must be an atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects non-atom field name" do
+      ir = ir_with_cookie({:secret, :beam_cookie, "value"})
+
+      assert_raise Zed.ValidationError,
+                   ~r/secret field must be an atom/,
+                   fn -> Validate.run!(ir) end
+    end
+  end
 end
