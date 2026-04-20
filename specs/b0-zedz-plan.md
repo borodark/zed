@@ -68,7 +68,21 @@ is available):
       because of distinct applicationId)
 - [ ] Launcher icon opens PairingActivity identically to probnik
 
-### Step 2 — Erlang term parser extension (~2 hrs)
+### Step 2 — Erlang term parser extension (~2 hrs) — ✅ DONE 2026-04-20, commit `aa54847` (zedz)
+
+- `ZedAdminPayload` class with tolerant 7-tuple parser, validation per
+  this spec's §2, stable failure-reason tags exposed via
+  `lastFailureReason()` for UI messaging.
+- `QrScannerActivity` dispatches on first tag atom, sets `qr_tag`
+  Intent extra (`zed_admin` / `probnikoff_net`) so the caller
+  routes correctly in Step 3.
+- 23 JUnit fixture tests, all green (25ms).
+- `junit:4.13.2` added as `testImplementation`.
+
+Details below kept as the original plan (useful when diffing scope
+against what actually shipped).
+
+
 
 In `NodePreferences.java` (or equivalent parser in Kotlin if the
 rewrite happened), extend the regex dispatch:
