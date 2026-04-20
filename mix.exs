@@ -40,6 +40,13 @@ defmodule Zed.MixProject do
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
 
+      # Path dep — probnik_qr lives alongside zed in the parent dir
+      # (~/projects/learn_erl/probnik_qr). Exposes show_term/1,
+      # render_term/1, payload_term/1 so zed can render its own
+      # pairing terms (zed_admin OTT payload) without forking the
+      # ANSI QR logic.
+      {:probnik_qr, path: "../probnik_qr"},
+
       # Test
       {:propcheck, "~> 1.4", only: :test, runtime: false},
       {:floki, "~> 0.36", only: :test}

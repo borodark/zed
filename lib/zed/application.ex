@@ -13,7 +13,11 @@ defmodule Zed.Application do
       # here — `zed serve` starts it under its own supervisor, so that
       # one-shot verbs (bootstrap init, status, etc.) do not pay the
       # cost of a listening socket.
-      {Phoenix.PubSub, name: Zed.PubSub}
+      {Phoenix.PubSub, name: Zed.PubSub},
+      # OTT ledger for QR-driven admin login. Always-on so tests and
+      # serve share the same process; the memory cost of an idle
+      # GenServer + empty ETS table is negligible.
+      Zed.Admin.OTT
     ]
 
     opts = [strategy: :one_for_one, name: Zed.Supervisor]

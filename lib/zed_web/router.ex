@@ -10,6 +10,11 @@ defmodule ZedWeb.Router do
     plug :put_secure_browser_headers
   end
 
+  pipeline :api do
+    plug :accepts, ["json"]
+    plug :fetch_session
+  end
+
   pipeline :require_admin do
     plug ZedWeb.Plugs.RequireAdmin
   end
@@ -21,6 +26,12 @@ defmodule ZedWeb.Router do
     get "/admin/login", AdminController, :new_session
     post "/admin/login", AdminController, :create_session
     post "/admin/logout", AdminController, :delete_session
+  end
+
+  scope "/admin", ZedWeb do
+    pipe_through :api
+
+    post "/qr-login", AdminQRController, :redeem
   end
 
   scope "/admin", ZedWeb do
