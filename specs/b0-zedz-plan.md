@@ -45,31 +45,28 @@ pinning.
 
 ## Incremental plan
 
-### Step 1 — Repo fork (~1 hr)
+### Step 1 — Repo fork (~1 hr) — ✅ DONE 2026-04-20, commit `1fd9ffd`
 
-```sh
-# on dev host
-cp -r ~/projects/learn_erl/probnik ~/projects/learn_erl/zedz
-cd ~/projects/learn_erl/zedz
-rm -rf .git _build deps _install .DS_Store
-git init
-git add -A
-git commit -m "Fork from probnik at <sha>"
+Done:
+- `~/projects/learn_erl/zedz/` populated from probnik, host variant
+  stripped (net variant kept as the starting point), build/gradle
+  caches cleaned.
+- `com.probnikoff.net` → `io.octanix.zedz` across `build.gradle`,
+  `AndroidManifest.xml`, Java sources, XML resources. Source tree
+  moved to `src/main/java/io/octanix/zedz/` (13 files).
+- Branding: settings.gradle rootProject → `Zedz`, app label → `Zedz`,
+  theme → `Theme.Zedz`, pairing header → `Zedz`.
+- gitignore extended for Android/Gradle artifacts.
+- Bare repo at `git@192.168.0.33:/mnt/jeff/home/git/repos/zedz.git`,
+  owned `git:git`. Initial push of `1fd9ffd`.
 
-# bare repo on 192.168.0.33
-ssh io@192.168.0.33 'git init --bare /mnt/jeff/home/git/repos/zedz.git'
-git remote add origin git@192.168.0.33:/mnt/jeff/home/git/repos/zedz.git
-git push -u origin main
-```
-
-Rename Android `applicationId` (`probnik.net` → `io.octanix.zedz`) in
-`android/app/build.gradle` so the app installs alongside probnik on the
-same phone without collision. Update package declarations in Java
-sources via IDE refactor.
-
-Acceptance: `./rebuild-android-host.sh` produces an APK with the new
-id; APK installs on a test device; launcher icon launches the
-PairingActivity identically to probnik.
+Remaining for full Step 1 acceptance (deferred to when a test device
+is available):
+- [ ] `./rebuild-android-net.sh` produces an APK with the new
+      applicationId
+- [ ] APK installs on a test device alongside probnik (no collision
+      because of distinct applicationId)
+- [ ] Launcher icon opens PairingActivity identically to probnik
 
 ### Step 2 — Erlang term parser extension (~2 hrs)
 
