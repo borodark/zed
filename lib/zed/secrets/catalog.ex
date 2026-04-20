@@ -35,6 +35,11 @@ defmodule Zed.Secrets.Catalog do
       fields: [:priv, :pub],
       algo: :ed25519,
       consumers: [:sshd]
+    },
+    tls_selfsigned: %{
+      fields: [:cert, :key],
+      algo: :selfsigned_tls,
+      consumers: [:zed_web]
     }
   }
 

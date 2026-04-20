@@ -316,6 +316,41 @@ defmodule Zed.Bootstrap do
     {priv, {:ssh_host_ed25519, :pubkey_b64, Base.encode64(pub, padding: false)}}
   end
 
+  # tls_selfsigned writes <slot>.cert (mode 0444, public) and <slot>.key
+  # (mode 0400). The authoritative fingerprint is over the DER-encoded
+  # certificate so it matches what a browser/mobile client derives from
+  # the TLS handshake.
+  defp store_material(:tls_selfsigned, %{cert: cert_pem, key: key_pem}, path) do
+    Store.write_value(path <> ".cert", cert_pem, 0o444)
+    Store.write_value(path <> ".key", key_pem, 0o400)
+    der_fp = cert_der_fingerprint(cert_pem)
+    {cert_pem, {:tls_selfsigned, :cert_fingerprint, der_fp}}
+  end
+
+  @doc """
+  sha256 of the DER-encoded certificate inside a PEM binary.
+
+  Matches the fingerprint a TLS client sees on the handshake leaf
+  certificate. Used by A2b to pin the cert in the QR pairing payload.
+  Returns `"sha256:<lowercase hex>"` or `"unknown"` if the PEM is
+  malformed.
+  """
+  def cert_der_fingerprint(cert_pem) when is_binary(cert_pem) do
+    cert_pem
+    |> :public_key.pem_decode()
+    |> Enum.find_value(fn
+      {:Certificate, der, _} -> der
+      _ -> nil
+    end)
+    |> case do
+      nil ->
+        "unknown"
+
+      der ->
+        "sha256:" <> (:crypto.hash(:sha256, der) |> Base.encode16(case: :lower))
+    end
+  end
+
   defp stamp_slot(base, slot, path, algo, fingerprint) do
     now = DateTime.utc_now() |> DateTime.to_iso8601()
     consumers = Catalog.consumers(slot) |> Enum.map(&Atom.to_string/1) |> Enum.join(",")
@@ -374,6 +409,8 @@ defmodule Zed.Bootstrap do
 
   defp field_file_present?(path, :priv), do: File.regular?(path)
   defp field_file_present?(path, :pub), do: File.regular?(path <> ".pub")
+  defp field_file_present?(path, :cert), do: File.regular?(path <> ".cert")
+  defp field_file_present?(path, :key), do: File.regular?(path <> ".key")
   defp field_file_present?(path, :value), do: File.regular?(path)
   defp field_file_present?(_, _), do: false
 
