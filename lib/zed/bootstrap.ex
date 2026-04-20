@@ -57,7 +57,7 @@ defmodule Zed.Bootstrap do
          :ok <- ensure_secrets_dataset(base, passphrase, mountpoint),
          :ok <- mount_secrets(base),
          {:ok, generated} <- generate_missing_slots(base, mountpoint, admin_passwd_plaintext),
-         {:ok, snap} <- snapshot(base) do
+         {:ok, snap} <- maybe_snapshot(base, generated) do
       {:ok,
        %{
          base: base,
@@ -66,6 +66,17 @@ defmodule Zed.Bootstrap do
          banner: banner_from_generated(generated),
          snapshot: snap
        }}
+    end
+  end
+
+  # Snapshot only when something was actually generated. The idempotent
+  # no-op case has no new state to record, and taking a second snapshot
+  # in the same second collides with the first on timestamp resolution.
+  defp maybe_snapshot(base, generated) do
+    if Enum.any?(generated, &(!&1[:skipped])) do
+      snapshot(base)
+    else
+      {:ok, nil}
     end
   end
 

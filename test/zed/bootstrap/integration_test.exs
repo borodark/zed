@@ -155,59 +155,6 @@ defmodule Zed.BootstrapIntegrationTest do
     end
   end
 
-  describe "DIAGNOSTIC — stamped path vs filesystem reality" do
-    test "stamped path property matches write-time path exactly", ctx do
-      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
-
-      IO.puts("\n=== DIAGNOSTIC BEGIN ===")
-      IO.puts("  System.tmp_dir!() = #{System.tmp_dir!()}")
-      IO.puts("  TMPDIR env         = #{inspect(System.get_env("TMPDIR"))}")
-      IO.puts("  ctx.mountpoint     = #{ctx.mountpoint}")
-      IO.puts("  ctx.base           = #{ctx.base}")
-
-      {mount_out, _} = System.cmd("mount", [], stderr_to_stdout: true)
-      IO.puts("  relevant `mount` lines:")
-
-      for line <- String.split(mount_out, "\n"),
-          String.contains?(line, "zed-btest") or String.contains?(line, ctx.base) do
-        IO.puts("    #{line}")
-      end
-
-      {zfs_get_mp, _} =
-        System.cmd("zfs", ["get", "-H", "-o", "value", "mountpoint", "#{ctx.base}/zed/secrets"])
-
-      IO.puts("  zfs get mountpoint  = #{String.trim(zfs_get_mp)}")
-
-      props = Zed.ZFS.Property.get_all("#{ctx.base}/zed")
-
-      for slot <- Zed.Secrets.Catalog.slots() do
-        stamped = props["secret.#{slot}.path"]
-        expected = Path.join(ctx.mountpoint, Atom.to_string(slot))
-        status_char = if stamped == expected, do: "OK", else: "MISMATCH"
-        exists_char = if stamped && File.regular?(stamped), do: "exists", else: "MISSING"
-
-        IO.puts(
-          "  slot=#{slot}  stamped=#{stamped}  expected=#{expected}  #{status_char} file=#{exists_char}"
-        )
-
-        if stamped do
-          ls_target = Path.dirname(stamped)
-          {ls_out, _} = System.cmd("ls", ["-la", ls_target], stderr_to_stdout: true)
-          IO.puts("    ls -la #{ls_target}:\n#{indent(ls_out, "      ")}")
-        end
-      end
-
-      IO.puts("=== DIAGNOSTIC END ===\n")
-    end
-
-    defp indent(string, prefix) do
-      string
-      |> String.split("\n")
-      |> Enum.map(&(prefix <> &1))
-      |> Enum.join("\n")
-    end
-  end
-
   describe "status/1" do
     test "reports all slots with file_present=true after init", ctx do
       {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
