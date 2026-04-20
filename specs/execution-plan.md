@@ -185,6 +185,7 @@ git pull --rebase
 | Samba version mismatch between FreeBSD ports and macOS expectations | TM backups silently fail or corrupt | Pin Samba version in `scripts/jail-bootstrap.sh`; test macOS 13/14/15 before declaring C3 done |
 | EXLA/Elixir version drift between dev host and jail | Subtle test failures | `.tool-versions` file committed; enforce `asdf install` in both environments on branch checkout |
 | Iteration branches diverge over weeks | Merge conflicts in `lib/zed/cli.ex` (central verb dispatch) | Rebase feature branches on `main` at most every 2 days; keep CLI verb additions in separate files where possible |
+| Jail mountpoint remap — ZFS inside iocage jail path-adjusts mountpoints with `/mnt/` prefix | Dataset mounts at `/mnt/tmp/...` but files written to `/tmp/...` land on jail rootfs, not the encrypted dataset. Tests still pass (files exist at stamped path), but encryption doesn't protect anything in this env. | A1 side-steps via `secret.<slot>.path` property (stamped from caller-supplied write path, not from `zfs get mountpoint`). Never call `Dataset.mountpoint/1` from Bootstrap-adjacent code. Production (FreeBSD host or jail with matching mountpoint view) behaves correctly. C3 (Samba config rendering) must also source paths from the property, not ZFS, for the same reason. |
 
 ---
 
