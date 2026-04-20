@@ -172,7 +172,7 @@ defmodule Zed.DSL do
   end
 
   defp parse_kv_statement({key, _, [value]}, acc) when is_atom(key) do
-    Map.put(acc, key, value)
+    Map.put(acc, key, normalize_value(value))
   end
 
   defp parse_kv_statement({key, _, nil}, acc) when is_atom(key) do
@@ -180,6 +180,17 @@ defmodule Zed.DSL do
   end
 
   defp parse_kv_statement(_, acc), do: acc
+
+  # Elixir represents literal 3+ tuples in the AST as `{:{}, meta, args}`,
+  # while 2-tuples are themselves (the AST of `{a, b}` is `{a, b}`). When
+  # DSL authors write `{:secret, slot, field, opts}`, the macro receives
+  # the AST form; Macro.escape later converts back to a runtime tuple
+  # only if we normalise here first.
+  defp normalize_value({:{}, _, args}) when is_list(args) do
+    args |> Enum.map(&normalize_value/1) |> List.to_tuple()
+  end
+
+  defp normalize_value(other), do: other
 
   # Parse app block — like kv but accumulates :health entries.
   defp parse_app_block({:__block__, _, statements}) do
@@ -196,7 +207,7 @@ defmodule Zed.DSL do
   end
 
   defp parse_app_statement({key, _, [value]}, acc) when is_atom(key) do
-    Map.put(acc, key, value)
+    Map.put(acc, key, normalize_value(value))
   end
 
   defp parse_app_statement(_, acc), do: acc
