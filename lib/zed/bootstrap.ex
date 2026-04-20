@@ -377,24 +377,41 @@ defmodule Zed.Bootstrap do
       is_nil(stored_fp) or is_nil(stored_path) ->
         %{slot: slot, status: :unset}
 
-      not File.regular?(stored_path) ->
-        %{slot: slot, status: :file_missing, expected: stored_fp, path: stored_path}
-
       true ->
-        case File.read(stored_path) do
-          {:ok, bytes} ->
-            actual = Store.fingerprint(bytes)
+        {read_path, hash_fn} = verify_target(slot, stored_path)
 
-            if actual == stored_fp do
-              %{slot: slot, status: :ok, fingerprint: actual}
-            else
-              %{slot: slot, status: :drift, expected: stored_fp, actual: actual}
+        cond do
+          not File.regular?(read_path) ->
+            %{slot: slot, status: :file_missing, expected: stored_fp, path: read_path}
+
+          true ->
+            case File.read(read_path) do
+              {:ok, bytes} ->
+                actual = hash_fn.(bytes)
+
+                if actual == stored_fp do
+                  %{slot: slot, status: :ok, fingerprint: actual}
+                else
+                  %{slot: slot, status: :drift, expected: stored_fp, actual: actual}
+                end
+
+              {:error, reason} ->
+                %{slot: slot, status: :read_error, reason: reason}
             end
-
-          {:error, reason} ->
-            %{slot: slot, status: :read_error, reason: reason}
         end
     end
+  end
+
+  # Per-slot verify dispatch: which file to read, and how to hash it.
+  # The default (single-value and keypair priv-at-base-path) is read
+  # from the base path and hash raw bytes via Store.fingerprint. TLS
+  # keeps the cert at <path>.cert and the fingerprint is over the DER.
+  defp verify_target(:tls_selfsigned, base_path) do
+    {base_path <> ".cert", &cert_der_fingerprint/1}
+  end
+
+  defp verify_target(_slot, base_path) do
+    {base_path, &Store.fingerprint/1}
   end
 
   # ----------------------------------------------------------------------
