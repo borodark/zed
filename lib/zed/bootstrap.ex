@@ -280,8 +280,7 @@ defmodule Zed.Bootstrap do
 
     with {:ok, material} <- Generate.by_algo(algo, gen_opts) do
       path = slot_path(mountpoint, slot)
-      {fingerprint_bytes, banner} = store_material(slot, material, path)
-      fingerprint = Store.fingerprint(fingerprint_bytes)
+      {fingerprint, banner} = store_material(slot, material, path)
       stamp_slot(base, slot, path, algo, fingerprint)
 
       {:ok,
@@ -296,35 +295,34 @@ defmodule Zed.Bootstrap do
     end
   end
 
-  # Per-slot storage: returns {fingerprint_bytes, banner_entry}.
-  # beam_cookie: one file, value-shown banner
-  # admin_passwd: hash on disk, plaintext-once banner
-  # ssh_host_ed25519: priv + pub.pub files, pubkey-b64 banner
+  # Per-slot storage: returns {fingerprint_string, banner_entry}.
+  # The fingerprint is the final value stamped into the ZFS property —
+  # verify/1 recomputes the same function on re-read. For most slots
+  # this is raw-bytes sha256 (Store.fingerprint), but tls_selfsigned
+  # uses the DER-decoded cert so the hash matches what a TLS client
+  # derives on handshake.
   defp store_material(:beam_cookie, bytes, path) when is_binary(bytes) do
     Store.write_value(path, bytes)
-    {bytes, {:beam_cookie, :value_stored_quietly}}
+    {Store.fingerprint(bytes), {:beam_cookie, :value_stored_quietly}}
   end
 
   defp store_material(:admin_passwd, %{plaintext: pw, hash: hash}, path) do
     Store.write_value(path, hash)
-    {hash, {:admin_passwd, :plaintext_once, pw}}
+    {Store.fingerprint(hash), {:admin_passwd, :plaintext_once, pw}}
   end
 
   defp store_material(:ssh_host_ed25519, %{priv: priv, pub: pub}, path) do
     Store.write_value(path, priv)
     Store.write_value(path <> ".pub", pub, 0o444)
-    {priv, {:ssh_host_ed25519, :pubkey_b64, Base.encode64(pub, padding: false)}}
+    {Store.fingerprint(priv),
+     {:ssh_host_ed25519, :pubkey_b64, Base.encode64(pub, padding: false)}}
   end
 
-  # tls_selfsigned writes <slot>.cert (mode 0444, public) and <slot>.key
-  # (mode 0400). The authoritative fingerprint is over the DER-encoded
-  # certificate so it matches what a browser/mobile client derives from
-  # the TLS handshake.
   defp store_material(:tls_selfsigned, %{cert: cert_pem, key: key_pem}, path) do
     Store.write_value(path <> ".cert", cert_pem, 0o444)
     Store.write_value(path <> ".key", key_pem, 0o400)
-    der_fp = cert_der_fingerprint(cert_pem)
-    {cert_pem, {:tls_selfsigned, :cert_fingerprint, der_fp}}
+    fp = cert_der_fingerprint(cert_pem)
+    {fp, {:tls_selfsigned, :cert_fingerprint, fp}}
   end
 
   @doc """
