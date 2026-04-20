@@ -295,11 +295,69 @@ defmodule Zed.CLI do
     IO.puts("zed-web serving on #{bind}:#{port} (base=#{base})")
     IO.puts("  admin login: #{scheme(tls_cert, tls_key)}://#{bind}:#{port}/admin/login")
 
+    print_pairing_qr(base, bind_ip, port, tls_cert, tls_key)
+
     Process.sleep(:infinity)
   end
 
   defp scheme(cert, key) when is_binary(cert) and is_binary(key), do: "https"
   defp scheme(_, _), do: "http"
+
+  # Issue a short-lived OTT and render a :zed_admin QR on the serve-start
+  # console. Companion app scans → logs in without typing a password.
+  # Silently skipped if cert fingerprint or OTT issuance fail — fallback
+  # is password login via the printed URL above.
+  defp print_pairing_qr(base, bind_ip, port, tls_cert, _tls_key) do
+    with {:ok, cert_fp} <- read_cert_fingerprint(base, tls_cert),
+         {:ok, %{ott: ott, expires_at: exp}} <-
+           Zed.Admin.OTT.issue(ttl_seconds: 300, issued_by: :serve_startup) do
+      payload = Zed.QR.admin_payload(bind_ip, port, cert_fp, ott, exp)
+
+      IO.puts("")
+      IO.puts("Scan to log in (valid 5 min):")
+
+      case Zed.QR.render(payload) do
+        {:ok, ansi} ->
+          IO.write(ansi)
+          IO.puts("  node:        #{inspect(Node.self())}")
+          IO.puts("  host:port:   #{format_ip(bind_ip)}:#{port}")
+          IO.puts("  cert fp:     #{cert_fp}")
+          IO.puts("  ott expires: #{format_unix(exp)} (#{exp})")
+
+        {:error, reason} ->
+          IO.puts("  (QR render failed: #{inspect(reason)}; use password login)")
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp read_cert_fingerprint(base, tls_cert) when is_binary(tls_cert) do
+    case File.read(tls_cert) do
+      {:ok, pem} -> {:ok, Zed.Bootstrap.cert_der_fingerprint(pem)}
+      _ -> fallback_fingerprint(base)
+    end
+  end
+
+  defp read_cert_fingerprint(base, _), do: fallback_fingerprint(base)
+
+  defp fallback_fingerprint(base) do
+    # Pull from the stamped tls_selfsigned slot if available
+    props = Zed.ZFS.Property.get_all("#{base}/zed")
+
+    with path when is_binary(path) <- Map.get(props, "secret.tls_selfsigned.path"),
+         {:ok, pem} <- File.read(path <> ".cert") do
+      {:ok, Zed.Bootstrap.cert_der_fingerprint(pem)}
+    else
+      _ -> {:error, :no_cert}
+    end
+  end
+
+  defp format_ip({a, b, c, d}), do: "#{a}.#{b}.#{c}.#{d}"
+
+  defp format_unix(unix) do
+    DateTime.from_unix!(unix) |> DateTime.to_string()
+  end
 
   # --- existing ---
 

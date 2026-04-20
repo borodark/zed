@@ -15,6 +15,7 @@
   "plug_crypto": {:hex, :plug_crypto, "2.1.1", "19bda8184399cb24afa10be734f84a16ea0a2bc65054e23a62bb10f06bc89491", [:mix], [], "hexpm", "6470bce6ffe41c8bd497612ffde1a7e4af67f36a15eea5f921af71cf3e11247c"},
   "propcheck": {:hex, :propcheck, "1.5.0", "df6f554a97eba4f92c3e4bc7758c8480e8bc401188af32cfe09641e81d8a55ba", [:mix], [{:libgraph, "~> 0.13", [hex: :libgraph, repo: "hexpm", optional: false]}, {:proper, "~> 1.5", [hex: :proper, repo: "hexpm", optional: false]}], "hexpm", "3388aa7909277faed166dfced39fad6ecae3c3be064352d37646be459fc80e09"},
   "proper": {:hex, :proper, "1.5.0", "4a87ce8b219858e64c9aa015f4f7ed739d0ac3ca6bfd77fa62794617ee784225", [:rebar3], [], "hexpm", "fbf7cf0625e5441a314514f7d8e1eaff52090fcd94ff34b5171ff293d3f9969a"},
+  "qrcode": {:git, "https://github.com/komone/qrcode", "4f74760f38cf93f359564c337e2ceff63039cf87", [branch: "master"]},
   "telemetry": {:hex, :telemetry, "1.4.1", "ab6de178e2b29b58e8256b92b382ea3f590a47152ca3651ea857a6cae05ac423", [:rebar3], [], "hexpm", "2172e05a27531d3d31dd9782841065c50dd5c3c7699d95266b2edd54c2dafa1c"},
   "thousand_island": {:hex, :thousand_island, "1.4.3", "2158209580f633be38d43ec4e3ce0a01079592b9657afff9080d5d8ca149a3af", [:mix], [{:telemetry, "~> 0.4 or ~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}], "hexpm", "6e4ce09b0fd761a58594d02814d40f77daff460c48a7354a15ab353bb998ea0b"},
   "websock": {:hex, :websock, "0.5.3", "2f69a6ebe810328555b6fe5c831a851f485e303a7c8ce6c5f675abeb20ebdadc", [:mix], [], "hexpm", "6105453d7fac22c712ad66fab1d45abdf049868f253cf719b625151460b8b453"},
