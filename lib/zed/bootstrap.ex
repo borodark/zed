@@ -77,17 +77,22 @@ defmodule Zed.Bootstrap do
   Slots not yet generated have `fingerprint: nil`.
   """
   def status(base) when is_binary(base) do
-    mountpoint = resolve_mountpoint(base)
     props = Property.get_all("#{base}/zed")
 
     Enum.map(Catalog.slots(), fn slot ->
-      path = slot_path(mountpoint, slot)
+      path = Map.get(props, "secret.#{slot}.path")
 
       file_present =
-        case Catalog.fields(slot) do
-          [_single] -> File.regular?(path)
-          fields when is_list(fields) -> Enum.all?(fields, &field_file_present?(path, &1))
-          _ -> false
+        if path do
+          fields = Catalog.fields(slot)
+
+          cond do
+            fields == [] -> false
+            [:value] == fields -> File.regular?(path)
+            true -> Enum.all?(fields, &field_file_present?(path, &1))
+          end
+        else
+          false
         end
 
       %{
@@ -113,11 +118,10 @@ defmodule Zed.Bootstrap do
     - `:drift`        — file exists but fingerprint does not match
   """
   def verify(base) when is_binary(base) do
-    mountpoint = resolve_mountpoint(base)
     props = Property.get_all("#{base}/zed")
 
     Enum.map(Catalog.slots(), fn slot ->
-      verify_slot(slot, mountpoint, props)
+      verify_slot(slot, props)
     end)
   end
 
@@ -128,19 +132,22 @@ defmodule Zed.Bootstrap do
   `:ssh_host_ed25519`), `{:error, :no_pubkey}` for single-value slots.
   """
   def export_pubkey(base, slot) when is_binary(base) and is_atom(slot) do
-    mountpoint = resolve_mountpoint(base)
+    fields = Catalog.fields(slot)
 
-    case Catalog.fields(slot) do
-      fields when is_list(fields) ->
-        if :pub in fields do
-          pub_path = slot_path(mountpoint, slot) <> ".pub"
-          Store.read_value(pub_path)
-        else
-          {:error, :no_pubkey}
-        end
-
-      _ ->
+    cond do
+      fields == [] ->
         {:error, :unknown_slot}
+
+      :pub not in fields ->
+        {:error, :no_pubkey}
+
+      true ->
+        props = Property.get_all("#{base}/zed")
+
+        case Map.get(props, "secret.#{slot}.path") do
+          nil -> {:error, :slot_not_generated}
+          path -> Store.read_value(path <> ".pub")
+        end
     end
   end
 
@@ -316,19 +323,19 @@ defmodule Zed.Bootstrap do
   # Verify
   # ----------------------------------------------------------------------
 
-  defp verify_slot(slot, mountpoint, props) do
-    path = slot_path(mountpoint, slot)
+  defp verify_slot(slot, props) do
     stored_fp = Map.get(props, "secret.#{slot}.fingerprint")
+    stored_path = Map.get(props, "secret.#{slot}.path")
 
     cond do
-      is_nil(stored_fp) ->
+      is_nil(stored_fp) or is_nil(stored_path) ->
         %{slot: slot, status: :unset}
 
-      not File.regular?(verify_target(slot, path)) ->
-        %{slot: slot, status: :file_missing, expected: stored_fp, path: path}
+      not File.regular?(stored_path) ->
+        %{slot: slot, status: :file_missing, expected: stored_fp, path: stored_path}
 
       true ->
-        case File.read(verify_target(slot, path)) do
+        case File.read(stored_path) do
           {:ok, bytes} ->
             actual = Store.fingerprint(bytes)
 
@@ -344,24 +351,9 @@ defmodule Zed.Bootstrap do
     end
   end
 
-  # For keypair slots the fingerprint is over the private key file.
-  defp verify_target(:ssh_host_ed25519, path), do: path
-  defp verify_target(_, path), do: path
-
   # ----------------------------------------------------------------------
   # Helpers
   # ----------------------------------------------------------------------
-
-  defp resolve_mountpoint(base) do
-    ds = "#{base}/zed/secrets"
-
-    case Dataset.mountpoint(ds) do
-      nil -> @default_mountpoint
-      "" -> @default_mountpoint
-      "-" -> @default_mountpoint
-      path -> path
-    end
-  end
 
   defp slot_path(mountpoint, slot), do: Path.join(mountpoint, Atom.to_string(slot))
 
