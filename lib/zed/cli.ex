@@ -269,16 +269,23 @@ defmodule Zed.CLI do
 
     endpoint_opts =
       if tls_cert && tls_key && File.exists?(tls_cert) && File.exists?(tls_key) do
-        Keyword.put(endpoint_opts, :https,
+        endpoint_opts
+        |> Keyword.put(:https,
           ip: bind_ip,
           port: port,
           certfile: tls_cert,
           keyfile: tls_key,
           otp_app: :zed
         )
+        # Disable HTTP listener inherited from dev.exs so we're not
+        # listening on both :http and :https at the same port.
+        |> Keyword.put(:http, false)
       else
         IO.puts("note: running on plain HTTP (no ZED_TLS_CERT/ZED_TLS_KEY set)")
-        Keyword.put(endpoint_opts, :http, ip: bind_ip, port: port)
+
+        endpoint_opts
+        |> Keyword.put(:http, ip: bind_ip, port: port)
+        |> Keyword.put(:https, false)
       end
 
     merged =
@@ -311,7 +318,8 @@ defmodule Zed.CLI do
     with {:ok, cert_fp} <- read_cert_fingerprint(base, tls_cert),
          {:ok, %{ott: ott, expires_at: exp}} <-
            Zed.Admin.OTT.issue(ttl_seconds: 300, issued_by: :serve_startup) do
-      payload = Zed.QR.admin_payload(bind_ip, port, cert_fp, ott, exp)
+      display_ip = routable_ip(bind_ip)
+      payload = Zed.QR.admin_payload(display_ip, port, cert_fp, ott, exp)
 
       IO.puts("")
       IO.puts("Scan to log in (valid 5 min):")
@@ -320,7 +328,7 @@ defmodule Zed.CLI do
         {:ok, ansi} ->
           IO.write(ansi)
           IO.puts("  node:        #{inspect(Node.self())}")
-          IO.puts("  host:port:   #{format_ip(bind_ip)}:#{port}")
+          IO.puts("  host:port:   #{format_ip(display_ip)}:#{port}")
           IO.puts("  cert fp:     #{cert_fp}")
           IO.puts("  ott expires: #{format_unix(exp)} (#{exp})")
 
@@ -331,6 +339,30 @@ defmodule Zed.CLI do
       _ -> :ok
     end
   end
+
+  # If bind is a wildcard (0.0.0.0), scan ifaddrs for a non-loopback
+  # IPv4 so the QR payload carries something a phone on the LAN can
+  # actually dial. Falls back to 127.0.0.1 if nothing usable is found.
+  defp routable_ip({0, 0, 0, 0}) do
+    case :inet.getifaddrs() do
+      {:ok, ifaddrs} ->
+        ifaddrs
+        |> Enum.flat_map(fn {_name, opts} ->
+          for {:addr, {a, b, c, d}} <- opts,
+              a != 127,
+              do: {a, b, c, d}
+        end)
+        |> case do
+          [ip | _] -> ip
+          [] -> {127, 0, 0, 1}
+        end
+
+      _ ->
+        {127, 0, 0, 1}
+    end
+  end
+
+  defp routable_ip(ip), do: ip
 
   defp read_cert_fingerprint(base, tls_cert) when is_binary(tls_cert) do
     case File.read(tls_cert) do
