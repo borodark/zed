@@ -33,15 +33,22 @@ if System.get_env("ZED_SERVE") == "1" do
 
   endpoint_opts =
     if tls_cert && tls_key && File.exists?(tls_cert) && File.exists?(tls_key) do
-      Keyword.put(endpoint_opts, :https,
+      endpoint_opts
+      |> Keyword.put(:https,
         ip: bind_ip,
         port: port,
         certfile: tls_cert,
         keyfile: tls_key,
         otp_app: :zed
       )
+      # Disable the HTTP listener inherited from compile-time config
+      # (dev.exs). Without this, Bandit binds both :http and :https on
+      # the same port.
+      |> Keyword.put(:http, false)
     else
-      Keyword.put(endpoint_opts, :http, ip: bind_ip, port: port)
+      endpoint_opts
+      |> Keyword.put(:http, ip: bind_ip, port: port)
+      |> Keyword.put(:https, false)
     end
 
   config :zed, ZedWeb.Endpoint, endpoint_opts
