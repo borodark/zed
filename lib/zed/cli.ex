@@ -10,9 +10,13 @@ defmodule Zed.CLI do
           dry_run: :boolean,
           verbose: :boolean,
           target: :string,
-          module: :string
+          module: :string,
+          base: :string,
+          mountpoint: :string,
+          slot: :string,
+          admin_passwd: :string
         ],
-        aliases: [n: :dry_run, v: :verbose, t: :target, m: :module]
+        aliases: [n: :dry_run, v: :verbose, t: :target, m: :module, b: :base]
       )
 
     case command do
@@ -21,6 +25,11 @@ defmodule Zed.CLI do
       ["rollback"] -> cmd_rollback(opts)
       ["status"] -> cmd_status(opts)
       ["version"] -> IO.puts("zed #{Zed.version()}")
+      ["bootstrap", "init"] -> cmd_bootstrap_init(opts)
+      ["bootstrap", "status"] -> cmd_bootstrap_status(opts)
+      ["bootstrap", "verify"] -> cmd_bootstrap_verify(opts)
+      ["bootstrap", "rotate"] -> cmd_bootstrap_rotate(opts)
+      ["bootstrap", "export-pubkey"] -> cmd_bootstrap_export_pubkey(opts)
       _ -> print_usage()
     end
   end
@@ -55,6 +64,172 @@ defmodule Zed.CLI do
     Zed.Output.print_status(state)
   end
 
+  # --- bootstrap commands ---
+
+  defp cmd_bootstrap_init(opts) do
+    base = require_base!(opts)
+    passphrase = resolve_passphrase(opts)
+    mountpoint = Keyword.get(opts, :mountpoint, "/var/db/zed/secrets")
+
+    init_opts = [passphrase: passphrase, mountpoint: mountpoint]
+
+    init_opts =
+      case Keyword.get(opts, :admin_passwd) do
+        nil -> init_opts
+        pw -> Keyword.put(init_opts, :admin_passwd, pw)
+      end
+
+    case Zed.Bootstrap.init(base, init_opts) do
+      {:ok, result} ->
+        print_bootstrap_banner(result)
+        :ok
+
+      {:error, reason} ->
+        IO.puts("bootstrap init failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp cmd_bootstrap_status(opts) do
+    base = require_base!(opts)
+    rows = Zed.Bootstrap.status(base)
+
+    IO.puts(
+      "\nSlot                  Algo              Fingerprint                                                      File  Age"
+    )
+
+    IO.puts(
+      "---------------------  ----------------  ---------------------------------------------------------------  ----  -------------------------"
+    )
+
+    for row <- rows do
+      IO.puts(
+        "#{pad(row.slot, 21)}  #{pad(row.algo || "-", 16)}  #{pad(row.fingerprint || "-", 63)}  #{pad(row.file_present, 4)}  #{row.created_at || "-"}"
+      )
+    end
+
+    :ok
+  end
+
+  defp cmd_bootstrap_verify(opts) do
+    base = require_base!(opts)
+    results = Zed.Bootstrap.verify(base)
+    any_bad = Enum.any?(results, &(&1.status not in [:ok, :unset]))
+
+    for r <- results do
+      tag =
+        case r.status do
+          :ok -> "OK"
+          :unset -> "UNSET"
+          :file_missing -> "MISSING"
+          :drift -> "DRIFT"
+          _ -> "ERROR"
+        end
+
+      IO.puts("#{pad(tag, 8)} #{r.slot}  #{inspect(Map.drop(r, [:slot, :status]))}")
+    end
+
+    if any_bad, do: System.halt(2), else: :ok
+  end
+
+  defp cmd_bootstrap_rotate(_opts) do
+    IO.puts("bootstrap rotate: not yet implemented (A1 ships init/status/verify/export-pubkey).")
+    System.halt(2)
+  end
+
+  defp cmd_bootstrap_export_pubkey(opts) do
+    base = require_base!(opts)
+
+    slot =
+      opts
+      |> Keyword.fetch!(:slot)
+      |> String.to_atom()
+
+    case Zed.Bootstrap.export_pubkey(base, slot) do
+      {:ok, bytes} ->
+        IO.puts(Base.encode64(bytes, padding: false))
+
+      {:error, reason} ->
+        IO.puts("export-pubkey failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp require_base!(opts) do
+    case Keyword.get(opts, :base) do
+      nil ->
+        IO.puts("Error: --base <dataset> is required (e.g. --base jeff for production, jeff/zed-test/x for tests).")
+        System.halt(1)
+
+      base ->
+        base
+    end
+  end
+
+  defp resolve_passphrase(opts) do
+    case System.get_env("ZED_BOOTSTRAP_PASSPHRASE") do
+      nil ->
+        case Keyword.get(opts, :passphrase) do
+          nil ->
+            IO.puts("Error: set ZED_BOOTSTRAP_PASSPHRASE, or pass --passphrase.")
+            System.halt(1)
+
+          pw ->
+            pw
+        end
+
+      pw ->
+        pw
+    end
+  end
+
+  defp print_bootstrap_banner(%{base: base, snapshot: snap, banner: banner, paths: paths}) do
+    IO.puts("""
+
+    zed bootstrap complete.
+      base:      #{base}
+      snapshot:  #{snap}
+      secrets:   #{paths[:beam_cookie] |> Path.dirname()}
+    """)
+
+    plaintexts =
+      Enum.flat_map(banner, fn
+        {:admin_passwd, :plaintext_once, pw} -> [{"admin password", pw}]
+        _ -> []
+      end)
+
+    if plaintexts != [] do
+      IO.puts("GENERATED — save now, will not be shown again:")
+
+      for {label, val} <- plaintexts do
+        IO.puts("  #{label}: #{val}")
+      end
+    end
+
+    pubs =
+      Enum.flat_map(banner, fn
+        {slot, :pubkey_b64, b64} -> [{"#{slot} pubkey", b64}]
+        _ -> []
+      end)
+
+    if pubs != [] do
+      IO.puts("")
+      IO.puts("PUBLIC MATERIAL (safe to share):")
+
+      for {label, val} <- pubs do
+        IO.puts("  #{label}: #{val}")
+      end
+    end
+  end
+
+  defp pad(val, width) do
+    str = to_string(val)
+    pad_len = max(width - String.length(str), 0)
+    str <> String.duplicate(" ", pad_len)
+  end
+
+  # --- existing ---
+
   defp load_ir(opts) do
     case Keyword.get(opts, :module) do
       nil ->
@@ -81,17 +256,30 @@ defmodule Zed.CLI do
     Usage: zed <command> [options]
 
     Commands:
-      converge    Make reality match the declared state
-      diff        Show what would change
-      rollback    Roll back to a previous version or snapshot
-      status      Show current deployment state
-      version     Show zed version
+      converge                   Make reality match the declared state
+      diff                       Show what would change
+      rollback                   Roll back to a previous version or snapshot
+      status                     Show current deployment state
+      version                    Show zed version
+
+      bootstrap init             Create <base>/zed, generate missing slots
+      bootstrap status           Show per-slot fingerprint, age, file-presence
+      bootstrap verify           Recompute fingerprints, report drift
+      bootstrap rotate           (not yet implemented in A1)
+      bootstrap export-pubkey    Print base64 pubkey for a keypair slot
 
     Options:
-      -m, --module MODULE   Deployment module (e.g., MyInfra.Trading)
-      -n, --dry-run         Show what would happen without applying
-      -t, --target TARGET   Rollback target (version string or @latest)
-      -v, --verbose         Verbose output
+      -m, --module MODULE        Deployment module (e.g., MyInfra.Trading)
+      -n, --dry-run              Show what would happen without applying
+      -t, --target TARGET        Rollback target (version string or @latest)
+      -v, --verbose              Verbose output
+      -b, --base DATASET         Parent dataset for bootstrap (e.g. jeff)
+      --mountpoint PATH          Override <base>/zed/secrets mountpoint
+      --slot NAME                Slot name for bootstrap export-pubkey
+      --admin-passwd STRING      Supply admin password (or auto-generate)
+
+    Environment:
+      ZED_BOOTSTRAP_PASSPHRASE   Passphrase for encrypted secrets dataset
     """)
   end
 end

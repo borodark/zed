@@ -2,27 +2,44 @@ defmodule Zed.Secrets.Catalog do
   @moduledoc """
   Registry of known secret slots and storage modes.
 
-  Every `{:secret, slot, ...}` reference in the DSL is validated against
-  this catalog at compile time. Unknown slots fail with a list of known
-  names; unknown storage modes fail with a pointer to the layer that
-  will implement them.
+  A slot declares its valid `fields`, its generation `algo`, and the
+  service `consumers` that must restart when the slot rotates. DSL
+  references like `{:secret, :beam_cookie}` are validated against this
+  catalog at compile time (see `Zed.IR.Validate.check_secret_refs/1`).
 
-  Layer A1 will extend each slot with generator metadata (algorithm,
-  consumers, rotation policy). Layer A0 (this layer) records only the
-  names and valid field atoms per slot.
+  Algo atoms map to functions in `Zed.Secrets.Generate`.
+
+  Future layers extend the catalog:
+    - Layer D6 adds slots with `storage: :probnik_vault_pair`
+      (`secrets_ds_passphrase`, `replication_root_key`).
+    - Layer D7 adds slots with `storage: :shamir_k_of_n`
+      (`pool_encryption_key`).
   """
 
-  # slot name => list of legal field atoms for that slot
+  # slot => %{fields, algo, consumers}
+  #   fields:    list of valid field atoms for this slot
+  #   algo:      atom dispatched to Zed.Secrets.Generate.by_algo/2
+  #   consumers: CSV of service atoms (used to plan restarts on rotation)
   @slots %{
-    beam_cookie: [:value],
-    admin_passwd: [:value],
-    ssh_host_ed25519: [:priv, :pub]
+    beam_cookie: %{
+      fields: [:value],
+      algo: :random_256_b64,
+      consumers: [:beam]
+    },
+    admin_passwd: %{
+      fields: [:value],
+      algo: :pbkdf2_sha256,
+      consumers: [:zed_web]
+    },
+    ssh_host_ed25519: %{
+      fields: [:priv, :pub],
+      algo: :ed25519,
+      consumers: [:sshd]
+    }
   }
 
   @implemented_storage [:local_file]
 
-  # Storage modes recognized by the DSL but not yet implemented. The
-  # atom value is the layer that will ship the implementation.
   @pending_storage %{
     probnik_vault: "D6",
     probnik_vault_pair: "D6",
@@ -32,12 +49,22 @@ defmodule Zed.Secrets.Catalog do
   @doc "All known slot atoms."
   def slots, do: Map.keys(@slots)
 
+  @doc "Full spec for a slot, or `nil` if unknown."
+  def slot_spec(slot) when is_atom(slot), do: Map.get(@slots, slot)
+  def slot_spec(_), do: nil
+
   @doc "True if `slot` is a known slot atom."
   def slot_known?(slot) when is_atom(slot), do: Map.has_key?(@slots, slot)
   def slot_known?(_), do: false
 
   @doc "Legal fields for `slot`, or `[]` if unknown."
-  def fields(slot) when is_atom(slot), do: Map.get(@slots, slot, [])
+  def fields(slot) when is_atom(slot) do
+    case Map.get(@slots, slot) do
+      %{fields: f} -> f
+      _ -> []
+    end
+  end
+
   def fields(_), do: []
 
   @doc "True if `field` is valid for `slot`."
@@ -47,13 +74,33 @@ defmodule Zed.Secrets.Catalog do
 
   def field_valid?(_, _), do: false
 
+  @doc "Generation algo atom for a slot, or `nil` if unknown."
+  def algo(slot) when is_atom(slot) do
+    case Map.get(@slots, slot) do
+      %{algo: a} -> a
+      _ -> nil
+    end
+  end
+
+  def algo(_), do: nil
+
+  @doc "Consumer services for a slot, or `[]` if unknown."
+  def consumers(slot) when is_atom(slot) do
+    case Map.get(@slots, slot) do
+      %{consumers: c} -> c
+      _ -> []
+    end
+  end
+
+  def consumers(_), do: []
+
   @doc "Storage modes the current codebase actually implements."
   def implemented_storage, do: @implemented_storage
 
   @doc "Storage modes recognized but not yet implemented (atom => layer tag)."
   def pending_storage, do: @pending_storage
 
-  @doc "True if `mode` is any known storage atom (implemented or pending)."
+  @doc "True if `mode` is any known storage atom."
   def storage_known?(mode) when is_atom(mode) do
     mode in @implemented_storage or Map.has_key?(@pending_storage, mode)
   end
