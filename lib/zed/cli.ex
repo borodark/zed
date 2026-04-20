@@ -315,14 +315,23 @@ defmodule Zed.CLI do
   # Silently skipped if cert fingerprint or OTT issuance fail — fallback
   # is password login via the printed URL above.
   defp print_pairing_qr(base, bind_ip, port, tls_cert, _tls_key) do
+    ttl =
+      case System.get_env("ZED_QR_TTL") do
+        nil -> 300
+        s -> case Integer.parse(s) do
+          {n, ""} when n > 0 -> n
+          _ -> 300
+        end
+      end
+
     with {:ok, cert_fp} <- read_cert_fingerprint(base, tls_cert),
          {:ok, %{ott: ott, expires_at: exp}} <-
-           Zed.Admin.OTT.issue(ttl_seconds: 300, issued_by: :serve_startup) do
+           Zed.Admin.OTT.issue(ttl_seconds: ttl, issued_by: :serve_startup) do
       display_ip = routable_ip(bind_ip)
       payload = Zed.QR.admin_payload(display_ip, port, cert_fp, ott, exp)
 
       IO.puts("")
-      IO.puts("Scan to log in (valid 5 min):")
+      IO.puts("Scan to log in (valid #{format_ttl(ttl)}):")
 
       case Zed.QR.render(payload) do
         {:ok, ansi} ->
@@ -363,6 +372,10 @@ defmodule Zed.CLI do
   end
 
   defp routable_ip(ip), do: ip
+
+  defp format_ttl(secs) when secs < 60, do: "#{secs}s"
+  defp format_ttl(secs) when secs < 3600, do: "#{div(secs, 60)} min"
+  defp format_ttl(secs), do: "#{div(secs, 3600)}h #{div(rem(secs, 3600), 60)}m"
 
   defp read_cert_fingerprint(base, tls_cert) when is_binary(tls_cert) do
     case File.read(tls_cert) do
@@ -449,6 +462,8 @@ defmodule Zed.CLI do
       ZED_BOOTSTRAP_PASSPHRASE   Passphrase for encrypted secrets dataset
       ZED_SECRET_KEY_BASE        Phoenix session signing key (serve)
       ZED_TLS_CERT, ZED_TLS_KEY  PEM paths for HTTPS (serve); HTTP if unset
+      ZED_QR_TTL                 Serve-startup QR OTT TTL in seconds
+                                   (default 300; B0 debug: try 3600)
     """)
   end
 end

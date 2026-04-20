@@ -9,6 +9,7 @@
 #   ZED_DEMO_BASE   parent dataset    (default jeff/zed-test/manual)
 #   ZED_DEMO_BIND   bind address      (default 0.0.0.0)
 #   ZED_DEMO_PORT   listen port       (default 4040)
+#   ZED_QR_TTL      QR OTT TTL (sec)  (default 300; set 3600 for B0 debug)
 
 set -eu
 
