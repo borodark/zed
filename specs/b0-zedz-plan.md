@@ -119,7 +119,30 @@ Acceptance: parser returns a valid `ZedAdminPayload` for a live
 `zed serve` QR; rejects expired, malformed, or wrong-tag payloads
 with distinct error codes.
 
-### Step 3 — AdminLoginActivity with cert-pinned WebView (~3 hrs)
+### Step 3 — AdminLoginActivity with cert-pinned WebView (~3 hrs) — ✅ DONE 2026-04-20, commit `2876553` (zedz)
+
+- `AdminLoginActivity` receives payload from `PairingActivity`,
+  prompts biometric (BIOMETRIC_WEAK | DEVICE_CREDENTIAL), POSTs the
+  OTT via OkHttp with custom trust manager, plants Set-Cookie in
+  the WebView's CookieManager, loads `/admin`.
+- `CertPin` helper: sha256 of DER leaf → `sha256:<hex>` matching
+  `Zed.Bootstrap.cert_der_fingerprint/1` on the server.
+- `PinnedHttp` builder: `OkHttpClient` with custom X509TrustManager,
+  hostname-verification bypass (pinning IS the trust anchor for a
+  `/CN=zed-web` self-signed cert).
+- WebView `onReceivedSslError` re-verifies the leaf cert every hop.
+- Error-string mapping covers all 5 stable tags from qr-schema.md §4.
+- 4 new `CertPinTest` JUnit tests on top of the existing 23 ZedAdminPayload tests. Total 27/0.
+- Debug APK builds (~27 MB).
+
+Deferred to an available device (not blocking):
+- [ ] End-to-end scan-to-admin on a real phone against jail `zed serve`.
+- [ ] Verify biometric prompt actually fires (device without
+      enrolment falls back to passcode via the builder flag).
+
+Details below kept as the original plan.
+
+
 
 New activity launched when the parser returns `ZedAdminPayload`.
 
