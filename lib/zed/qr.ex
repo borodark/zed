@@ -39,7 +39,12 @@ defmodule Zed.QR do
   def admin_payload({a, b, c, d}, port, cert_fingerprint, ott, expires_at)
       when is_integer(port) and is_binary(cert_fingerprint) and is_binary(ott) and
              is_integer(expires_at) do
-    {:zed_admin, Node.self(), {a, b, c, d}, port, cert_fingerprint, ott, expires_at}
+    # Convert binaries → charlists so io_lib:format("~p", [Term]) prints
+    # "sha256:..." rather than <<"sha256:...">>. Mobile parsers
+    # (zedz/specs/qr-schema.md §2) expect the double-quoted string
+    # form to keep the regex handler simple.
+    {:zed_admin, Node.self(), {a, b, c, d}, port,
+     String.to_charlist(cert_fingerprint), String.to_charlist(ott), expires_at}
   end
 
   @doc "Print the ANSI QR for `payload` to stdout. Returns `:ok` or `{:error, reason}`."
