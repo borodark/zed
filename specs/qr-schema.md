@@ -29,12 +29,21 @@ encodes):
 
 ```
 {zed_admin,'zed@plausible',{192,168,0,33},4040,"sha256:3f8a1bcc...",
-"oEzKJ9v7Rm...","1713546000"}
+"oEzKJ9v7Rm...",1713546000}
 ```
 
 Note: `~p` prints the IP tuple with braces + commas (no spaces on
 FreeBSD OTP 26), and prints the unix timestamp as an integer. Strings
 are printed with double quotes. Atoms single-quoted if non-trivial.
+
+**Wire representation of `CertFingerprint` and `OTT`** — these are
+Elixir binaries internally but the server converts them to Erlang
+charlists before the tuple is serialised. `~p` prints charlists as
+`"..."` (double-quoted); if they remained binaries, `~p` would emit
+`<<"...">>` and the mobile parser's regex would reject them. The
+conversion happens in `Zed.QR.admin_payload/5`; see the
+`String.to_charlist/1` call there. Do not change this without a
+coordinated mobile-side update.
 
 ---
 

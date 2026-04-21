@@ -12,8 +12,9 @@ defmodule Zed.QRTest do
       assert node_atom == Node.self()
       assert ip == {192, 168, 0, 33}
       assert port == 4040
-      assert fp == "sha256:aabb"
-      assert ott == "ott_xyz"
+      # cert_fp and ott are charlists so io_lib:format emits "..." not <<"...">>
+      assert fp == ~c"sha256:aabb"
+      assert ott == ~c"ott_xyz"
       assert exp == 1_713_546_000
     end
   end
