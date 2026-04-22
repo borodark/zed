@@ -15,6 +15,13 @@
 | 4 | Plan file location | `~/projects/learn_erl/zed/specs/iteration-plan.md` (this file). |
 | 5 | `storage:` field validation | **Parse-time.** IR validator rejects unknown storage values at compile time. Legal values evolve as layers land. |
 
+## Decisions locked 2026-04-21
+
+| # | Decision | Value |
+|---|---|---|
+| 6 | "Use my existing key on device" auth | **Split into A3 (passkey/WebAuthn) + A4 (SSH pubkey challenge).** Rejected: bundling ed25519-for-SSH on the mobile device. Reason: the platform already provides the right primitive (passkeys), key lives in secure enclave, no private-key parsing in zedz. SSH-key path kept as a laptop-friendly bonus that doesn't need the mobile app at all. |
+| 7 | Order: finish B0 Step 5 vs A3/A4 first | **A3/A4 next, then B0 Step 5.** Step 5 is an integration-test pass; A3 opens the most-used path (browser passwordless) and benefits from the infrastructure B0 already exercised. |
+
 ---
 
 ## Layer rollup (effort after descope)
@@ -22,10 +29,12 @@
 | Layer | Effort | Commitment |
 |---|---|---|
 | **A — Retrofits** (valuable regardless of NAS) | **3.1 pm** | Commit now |
+| **A3 — Passkey (WebAuthn) admin auth** | 1.5 pm | Added 2026-04-21; orthogonal to NAS; browser-only, no mobile dep |
+| **A4 — SSH-key challenge admin auth** | 1.0 pm | Added 2026-04-21; ssh-keygen client only, no hex deps |
 | **B — Mobile** (companion app `zedz`) | 1.0 pm | Commit when A2 lands |
 | **C — NAS-adjacent** (SMB + TM + LiveView) | 4.0 pm | Probably not |
 | **D — Advanced** (Probnik Vault + Shamir + installer) | 5.5 pm | Only if C ships |
-| **Total to hypothetical MVP** | **13.6 pm** | |
+| **Total to hypothetical MVP + passwordless auth** | **16.1 pm** | |
 
 ---
 
@@ -123,6 +132,60 @@ Valuable for `zed` proper regardless of whether NAS ever materialises. This is t
 - [ ] Rate limiter fires after 10 failed redeems in 60s.
 - [ ] Concurrent redeem of same OTT: one succeeds, other gets `{error: :used}`.
 - [ ] Audit log records every issue + consume with OTT prefix (not full).
+
+---
+
+### A3 — Admin passkey (WebAuthn) auth
+
+**Scope:** let any modern browser register a passkey against an authenticated admin session, then use that passkey for subsequent logins — no password, no QR, no mobile app. Key lives in the OS secure enclave; biometric-gated on use. Works on laptop browsers, phone browsers, and iPads; orthogonal to the zedz Android app.
+
+**Deliverable:**
+- New slot on `<base>/zed`: `admin_passkeys` — list of registered credentials (one entry per device). Structure per credential: `credential_id`, `public_key_cose`, `sign_count`, `aaguid`, `device_label`, `created_at`, `last_used_at`.
+- Phoenix routes (JSON):
+  - `POST /admin/passkey/register-options` → challenge + relying-party info (requires authenticated admin session)
+  - `POST /admin/passkey/register` → store attestation, assign `device_label`
+  - `POST /admin/passkey/auth-options` → challenge (unauthenticated; by handle or userless)
+  - `POST /admin/passkey/auth` → verify assertion, issue session cookie
+- `ZedWeb.AdminController.new_session/2` gains a "Sign in with a passkey" button driving `navigator.credentials.get(...)` in the browser.
+- LV dashboard gains a "Passkeys" card: "Register this device", list of registered devices with labels + last-used, forget per-row.
+- Dep: `{:wax_, "~> 0.6"}` — pure-Elixir WebAuthn verifier, no NIF.
+
+**Effort:** 1.5 pm.
+**Depends on:** A2a (session + password fallback already work).
+**Acceptance:**
+- [ ] Log in with password or QR, hit "Register this device" → browser fires biometric prompt, credential appears in the Passkeys list.
+- [ ] Log out, click "Sign in with a passkey" → biometric → logged in, no password typed.
+- [ ] Register a second device (another browser), both appear in the list, either works for login.
+- [ ] Forget a device → its passkey no longer authenticates.
+- [ ] Replay of a captured assertion is rejected (sign-count monotonicity enforced).
+- [ ] Tested on at least: Chrome desktop, Safari iOS, Chrome Android.
+
+---
+
+### A4 — Admin SSH-key challenge auth
+
+**Scope:** operators who already carry `~/.ssh/id_ed25519` paste their **public** key into zed-web once; subsequent logins sign a server-issued challenge with their private key. Catches the audience that has SSH muscle memory but no passkey, and enables trivial programmatic auth for scripts.
+
+**Deliverable:**
+- New slot: `admin_authorized_keys` — stored as an `authorized_keys`-format file so it's auditable with standard tools. One line per key: `ssh-ed25519 AAAAC3Nz… alice@laptop`.
+- Routes:
+  - `POST /admin/ssh/challenge` with `{"fingerprint": "SHA256:<base64>"}` → `{"nonce": "...", "challenge_b64": "..."}`. Server stores `(nonce, fingerprint, expires_at)` with 120s TTL.
+  - `POST /admin/ssh/response` with `{"nonce": "...", "sig_b64": "..."}` → server looks up the nonce's fingerprint, finds the pubkey, verifies the signature on `challenge_b64`, issues session cookie.
+- CLI: `zed admin add-key <authorized_keys_line>` / `zed admin list-keys` / `zed admin remove-key <fingerprint>`.
+- LV dashboard: Keys card with add / label / remove.
+- Client helper: `scripts/zed-web-login.sh` — reads `~/.ssh/id_ed25519`, computes fingerprint, POSTs the two endpoints using `ssh-keygen -Y sign`, deposits the session cookie into a file the caller can hand to `curl --cookie`.
+- Elixir side uses `:public_key.verify/4` — OTP built-in, no dep.
+- Optional: zedz mobile gets an "Add my SSH pubkey" button that forwards the pubkey line from an SSH-manager app via Intent, no private-key handling on the phone.
+
+**Effort:** 1.0 pm.
+**Depends on:** A2a (authenticated session needed to add keys initially).
+**Acceptance:**
+- [ ] Add a pubkey via CLI or UI while logged in.
+- [ ] `scripts/zed-web-login.sh https://host:port` produces a valid session cookie; `curl --cookie` can hit `/admin`.
+- [ ] Wrong-key signature rejected.
+- [ ] Replay of `(nonce, sig)` rejected (nonce consumed after first successful response).
+- [ ] Unknown fingerprint rejected.
+- [ ] Key format variants covered: unencrypted OpenSSH ed25519 and rsa-4096.
 
 ---
 
@@ -290,4 +353,6 @@ Only begins if Layers A and B have landed and an explicit unshelve decision is m
 
 ## Next action
 
-Start **A0**. Zero dependencies, 0.1 pm, unlocks the rest of Layer A. Implementation is a validator clause in `Zed.IR.Validate` + a DSL parser extension for the `storage:` keyword.
+A0, A1, A2a, A2b all merged. B0 Steps 1–4 merged on the zedz repo.
+
+Next per decision #7: **A3 (admin passkey / WebAuthn)**. Unblocks laptop passwordless login for any modern browser, no mobile app required. Start with the slot + `wax_` dep + the two registration endpoints, then the LV card, then the login button. B0 Step 5 integration matrix follows after.
