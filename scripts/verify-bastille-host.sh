@@ -194,11 +194,14 @@ case "${1:-}" in
         : > "$LOG"
 
         # If a stale jail with this name exists from a prior aborted run,
-        # nuke it so the create call has a clean slate.
-        if bastille list 2>/dev/null | awk '{print $2}' | grep -qx "$SANDBOX"; then
+        # nuke it so the create call has a clean slate. Detection by
+        # filesystem presence is more reliable than parsing
+        # `bastille list` columns across versions.
+        if [ -d "/usr/local/bastille/jails/$SANDBOX" ]; then
             warn "stale '$SANDBOX' present, destroying first"
             doas bastille stop "$SANDBOX" >>"$LOG" 2>&1 || true
-            doas bastille destroy -f "$SANDBOX" >>"$LOG" 2>&1 || true
+            doas bastille destroy -af "$SANDBOX" >>"$LOG" 2>&1 || true
+            doas rm -rf "/usr/local/bastille/jails/$SANDBOX" >>"$LOG" 2>&1 || true
         fi
 
         if doas bastille create "$SANDBOX" 15.0-RELEASE 10.17.89.249/24 >>"$LOG" 2>&1; then
