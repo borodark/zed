@@ -22,6 +22,14 @@
 | 6 | "Use my existing key on device" auth | **Split into A3 (passkey/WebAuthn) + A4 (SSH pubkey challenge).** Rejected: bundling ed25519-for-SSH on the mobile device. Reason: the platform already provides the right primitive (passkeys), key lives in secure enclave, no private-key parsing in zedz. SSH-key path kept as a laptop-friendly bonus that doesn't need the mobile app at all. |
 | 7 | Order: finish B0 Step 5 vs A3/A4 first | **A3/A4 next, then B0 Step 5.** Step 5 is an integration-test pass; A3 opens the most-used path (browser passwordless) and benefits from the infrastructure B0 already exercised. |
 
+## Decisions locked 2026-04-24
+
+| # | Decision | Value |
+|---|---|---|
+| 8 | Jail + network lifecycle | **Depend on Bastille.** See [a5-bastille-plan.md](a5-bastille-plan.md). Thin CLI adapter; zed stays authoritative for state via `com.zed:*` ZFS user properties. |
+| 9 | iocage | **Drop after pilot migration of plausible.** Mountpoint-doubling and path-view quirks from iocage delegation go away. |
+| 10 | Bastille's files vs zed's props | **Bastille's `jail.conf`/`zfs.conf`/`rdr.conf` are treated as cache.** Zed re-renders them from `com.zed:*` on every converge. |
+
 ---
 
 ## Layer rollup (effort after descope)
@@ -31,10 +39,11 @@
 | **A — Retrofits** (valuable regardless of NAS) | **3.1 pm** | Commit now |
 | **A3 — Passkey (WebAuthn) admin auth** | 1.5 pm | Added 2026-04-21; orthogonal to NAS; browser-only, no mobile dep |
 | **A4 — SSH-key challenge admin auth** | 1.0 pm | Added 2026-04-21; ssh-keygen client only, no hex deps |
+| **A5 — Bastille jail backend** | 1.0 pm | Added 2026-04-24; see [a5-bastille-plan.md](a5-bastille-plan.md). Replaces iocage + hand-rolled VNET; prerequisite for C3. |
 | **B — Mobile** (companion app `zedz`) | 1.0 pm | Commit when A2 lands |
-| **C — NAS-adjacent** (SMB + TM + LiveView) | 4.0 pm | Probably not |
+| **C — NAS-adjacent** (SMB + TM + LiveView) | 4.0 pm | Probably not; gated on A5 |
 | **D — Advanced** (Probnik Vault + Shamir + installer) | 5.5 pm | Only if C ships |
-| **Total to hypothetical MVP + passwordless auth** | **16.1 pm** | |
+| **Total to hypothetical MVP + passwordless auth + Bastille** | **17.1 pm** | |
 
 ---
 
