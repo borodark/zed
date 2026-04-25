@@ -2,15 +2,19 @@ defmodule Zed.BootstrapIntegrationTest do
   @moduledoc """
   Integration tests for Zed.Bootstrap against real ZFS.
 
-  Runs against the jail-delegated subtree `jeff/zed-test/*`. Each test
-  gets a unique `jeff/zed-test/bootstrap-test-<int>` base + its own
-  temp mountpoint; on exit the base is destroyed recursively and the
-  mountpoint directory is removed.
+  Runs against a delegated test subtree. Default `jeff/zed-test/*`
+  matches the original NAS layout; on hosts with a different pool
+  (e.g. Mac Pro running on `zroot`), set `ZED_TEST_DATASET` to the
+  delegated parent before running:
 
-  Tagged `:zfs_live`; excluded from default runs. Require root on
+      ZED_TEST_DATASET=zroot/zed-test doas mix test --include zfs_live
+
+  Each test gets a unique `<parent>/bootstrap-test-<int>` base + its
+  own temp mountpoint; on exit the base is destroyed recursively and
+  the mountpoint directory is removed.
+
+  Tagged `:zfs_live`; excluded from default runs. Requires root on
   FreeBSD to mount the encrypted dataset.
-
-  Run with: `sudo mix test --include zfs_live`
   """
 
   use ExUnit.Case, async: false
@@ -21,11 +25,17 @@ defmodule Zed.BootstrapIntegrationTest do
   alias Zed.ZFS
   alias Zed.ZFS.Property
 
-  @parent "jeff/zed-test"
+  # Test parent dataset, parametrised so the suite runs on any host
+  # with a delegated test subtree. Aligns with the same env var the
+  # other :zfs_live tests already use (zfs/integration_test.exs,
+  # converge/integration_test.exs).
+  defp parent_dataset do
+    System.get_env("ZED_TEST_DATASET", "jeff/zed-test")
+  end
 
   setup do
     unique = :erlang.unique_integer([:positive])
-    base = "#{@parent}/bootstrap-test-#{unique}"
+    base = "#{parent_dataset()}/bootstrap-test-#{unique}"
     mountpoint = Path.join(System.tmp_dir!(), "zed-btest-#{unique}")
     passphrase = "test-passphrase-#{unique}"
 
