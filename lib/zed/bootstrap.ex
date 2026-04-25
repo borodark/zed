@@ -302,8 +302,16 @@ defmodule Zed.Bootstrap do
   defp banner_quiet?({:beam_cookie, :value_stored_quietly}), do: true
   defp banner_quiet?(_), do: false
 
+  # Microsecond resolution. Second-only timestamps collided when two
+  # rotate/3 calls landed in the same wall-clock second (caught on
+  # free-macpro-gpu running rotation_count loop). Microseconds give
+  # 6 extra digits — collision requires two calls within 1 µs, which
+  # is below the cost of a single ZFS snapshot.
   defp timestamp do
-    DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%S")
+    now = DateTime.utc_now()
+    base = Calendar.strftime(now, "%Y%m%dT%H%M%S")
+    micros = elem(now.microsecond, 0) |> Integer.to_string() |> String.pad_leading(6, "0")
+    base <> micros
   end
 
   @doc """

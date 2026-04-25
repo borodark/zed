@@ -289,8 +289,10 @@ defmodule Zed.BootstrapIntegrationTest do
       assert {:ok, %{snapshot_pre: pre, snapshot_post: post}} =
                Bootstrap.rotate(ctx.base, :beam_cookie)
 
-      assert pre =~ ~r|@rotate-pre-beam_cookie-\d{8}T\d{6}$|
-      assert post =~ ~r|@rotate-post-beam_cookie-\d{8}T\d{6}$|
+      # 14 digits (\d{8}T\d{6}) for second-resolution stamp + 6 digits
+      # micros = 20 digits total after the slot name.
+      assert pre =~ ~r|@rotate-pre-beam_cookie-\d{8}T\d{12}$|
+      assert post =~ ~r|@rotate-post-beam_cookie-\d{8}T\d{12}$|
 
       # Both snapshots exist on the zed dataset.
       {:ok, _} = ZFS.cmd(["list", "-t", "snapshot", "-H", "-o", "name", pre])
