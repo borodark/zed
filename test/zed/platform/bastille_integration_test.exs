@@ -42,10 +42,23 @@ defmodule Zed.Platform.BastilleIntegrationTest do
   end
 
   setup do
-    name = "zed-test-#{System.unique_integer([:positive])}"
+    # System.unique_integer/1 resets per VM start. Successive
+    # `mix test` invocations can collide on zed-test-1, zed-test-2…
+    # if a prior run left a jail behind (e.g. timed-out test that
+    # didn't run on_exit). Compose with os_time(:second) so the name
+    # is unique across runs as well as within one.
+    suffix = "#{System.os_time(:second)}-#{System.unique_integer([:positive])}"
+    name = "zed-test-#{suffix}"
     # Octet 100..199 carved out for adapter tests; verify-sandbox uses 249.
     octet = 100 + rem(System.unique_integer([:positive]), 100)
     ip = "#{@cidr_pool}#{octet}/24"
+
+    # Defensive: if a stale jail with this name exists (clock skew or
+    # a prior aborted run), wipe it so the test starts clean.
+    if Bastille.exists?(name) do
+      _ = Bastille.stop(name)
+      _ = Bastille.destroy(name)
+    end
 
     on_exit(fn ->
       _ = Bastille.stop(name)
