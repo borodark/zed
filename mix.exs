@@ -12,6 +12,9 @@ defmodule Zed.MixProject do
       escript: [main_module: Zed.CLI],
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_targets: ["all"],
+      make_clean: ["clean"],
       releases: releases(),
       description: "Declarative BEAM deployment on ZFS. FreeBSD and illumos."
     ]
@@ -67,6 +70,9 @@ defmodule Zed.MixProject do
       # pairing terms (zed_admin OTT payload) without forking the
       # ANSI QR logic.
       {:probnik_qr, path: "../probnik_qr"},
+
+      # Build (A5a.2): peer_cred.so NIF for getpeereid / SO_PEERCRED.
+      {:elixir_make, "~> 0.7", runtime: false},
 
       # Test
       {:propcheck, "~> 1.4", only: :test, runtime: false},
