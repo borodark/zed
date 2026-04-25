@@ -233,4 +233,94 @@ defmodule Zed.IR.ValidateTest do
                    fn -> Validate.run!(ir) end
     end
   end
+
+  describe "cluster validation (S2)" do
+    defp ir_with_cluster(cluster_config) do
+      %Zed.IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [],
+        zones: [],
+        clusters: [
+          %Zed.IR.Node{id: :demo, type: :cluster, config: cluster_config, deps: []}
+        ],
+        snapshot_config: %{}
+      }
+    end
+
+    test "rejects inline cookie string on a cluster" do
+      ir = ir_with_cluster(%{cookie: "literal-cookie", members: []})
+
+      assert_raise Zed.ValidationError,
+                   ~r/cluster :demo has an inline cookie string/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects inline cookie atom on a cluster" do
+      ir = ir_with_cluster(%{cookie: :literal_cookie, members: []})
+
+      assert_raise Zed.ValidationError,
+                   ~r/cluster :demo has an inline cookie atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "accepts {:env, var} cluster cookie" do
+      ir = ir_with_cluster(%{cookie: {:env, "COOKIE"}, members: []})
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+
+    test "accepts {:secret, slot, field} cluster cookie referencing a known slot" do
+      ir = ir_with_cluster(%{cookie: {:secret, :beam_cookie, :value}, members: []})
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+
+    test "rejects unknown slot on cluster cookie" do
+      ir = ir_with_cluster(%{cookie: {:secret, :ghost_cluster_cookie, :value}, members: []})
+
+      assert_raise Zed.ValidationError,
+                   ~r/unknown secret slot :ghost_cluster_cookie/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "accepts well-shaped node atoms" do
+      ir =
+        ir_with_cluster(%{
+          cookie: {:env, "C"},
+          members: [:"web@10.0.0.1", :"worker@host2"]
+        })
+
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+
+    test "rejects member without @ separator" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}, members: [:web]})
+
+      assert_raise Zed.ValidationError,
+                   ~r/member :web is not a valid node atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects non-atom member" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}, members: ["web@host"]})
+
+      assert_raise Zed.ValidationError,
+                   ~r/member "web@host" is not a valid node atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects non-list :members" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}, members: :not_a_list})
+
+      assert_raise Zed.ValidationError,
+                   ~r/cluster :demo :members must be a list/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "missing :members defaults to empty list (cluster declared but unpopulated)" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}})
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+  end
 end
