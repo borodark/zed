@@ -187,6 +187,51 @@ else
 fi
 
 # ----------------------------------------------------------------------
+hdr "A5a privilege boundary"
+
+# Service users + audit dir + socket parent — populated by
+# scripts/host-bring-up.sh. Their absence is a hard fail because A5a
+# code paths (Zed.Ops.Socket peer-cred check, audit log writer)
+# silently no-op or refuse to start without them.
+for u in zedweb zedops; do
+    if id "$u" >/dev/null 2>&1; then
+        UID_VAL=$(id -u "$u")
+        ok "user $u present (uid $UID_VAL)"
+    else
+        bad "user $u missing — run scripts/host-bring-up.sh"
+    fi
+done
+
+if [ -d /var/db/zed ]; then
+    OWN=$(stat -f '%Su:%Sg' /var/db/zed 2>/dev/null || stat -c '%U:%G' /var/db/zed 2>/dev/null)
+    case "$OWN" in
+        zedops:zedops) ok "/var/db/zed owned by zedops:zedops" ;;
+        *)             warn "/var/db/zed owned by $OWN (expected zedops:zedops)" ;;
+    esac
+else
+    bad "/var/db/zed missing — run scripts/host-bring-up.sh"
+fi
+
+if [ -d /var/run/zed ]; then
+    OWN=$(stat -f '%Su:%Sg' /var/run/zed 2>/dev/null || stat -c '%U:%G' /var/run/zed 2>/dev/null)
+    case "$OWN" in
+        zedops:zedweb) ok "/var/run/zed owned by zedops:zedweb (socket parent)" ;;
+        *)             warn "/var/run/zed owned by $OWN (expected zedops:zedweb)" ;;
+    esac
+else
+    bad "/var/run/zed missing — run scripts/host-bring-up.sh"
+fi
+
+# doas.conf installed and parses. Don't echo content to stdout; just
+# confirm the rule for zedops bastille-create exists, as a marker of
+# whether host-bring-up.sh ran with the zed template.
+if [ -r /usr/local/etc/doas.conf ] && grep -q '^permit nopass zedops as root cmd bastille args create' /usr/local/etc/doas.conf; then
+    ok "doas.conf has zedops capability rules"
+else
+    bad "doas.conf missing zedops rules — run scripts/host-bring-up.sh"
+fi
+
+# ----------------------------------------------------------------------
 hdr "Bastille release cache"
 
 if [ -d /usr/local/bastille/releases/15.0-RELEASE ]; then

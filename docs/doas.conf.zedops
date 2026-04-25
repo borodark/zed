@@ -1,0 +1,83 @@
+# /usr/local/etc/doas.conf — zed production posture (A5a.3).
+#
+# Installed by scripts/host-bring-up.sh; safe to re-install (file is
+# replaced wholesale). DO NOT hand-edit on a production host — re-run
+# the bring-up script with the desired flags instead.
+#
+# Style notes (earned from the A5.1 live-validation arc):
+#
+#   * `as root` (no colon) — the FreeBSD doas port matches OpenBSD's
+#     reference syntax. The `as :root` group-form was a side-effect
+#     of a missing trailing newline elsewhere in the file masking the
+#     real parse error. See blog post "The Lie at Exit Zero".
+#
+#   * `cmd bastille` (bare name, no path) — doas matches argv[0]
+#     literally; calling `doas bastille ...` does NOT match a rule
+#     written as `cmd /usr/local/bin/bastille`. Keep the bare name.
+#
+#   * Trailing newline is REQUIRED by the doas parser. The last line
+#     of this file must be terminated; if you're editing through any
+#     tool that strips it, the parse silently mismatches and you'll
+#     hit "Permission Denied" with no diagnostic.
+#
+#   * Per-verb rules, not `cmd bastille` blanket — a LiveView injection
+#     bug that lets an attacker run `bastille destroy <prod-jail>`
+#     gets caught here, not at runtime in zed.
+
+# ----------------------------------------------------------------------
+# Operator escalation. Wheel members get persist (5-min cache) doas
+# for human debugging on the console. Remove this rule once the
+# zedops boundary is the only blessed escalation path.
+permit persist :wheel as root
+
+# ----------------------------------------------------------------------
+# zedops: bastille verbs that don't mutate user-data state.
+# nopass — these run as part of every converge, no operator present.
+permit nopass zedops as root cmd bastille args create
+permit nopass zedops as root cmd bastille args start
+permit nopass zedops as root cmd bastille args stop
+permit nopass zedops as root cmd bastille args restart
+permit nopass zedops as root cmd bastille args cmd
+permit nopass zedops as root cmd bastille args list
+permit nopass zedops as root cmd bastille args rdr
+permit nopass zedops as root cmd bastille args network
+permit nopass zedops as root cmd bastille args mount
+permit nopass zedops as root cmd bastille args umount
+
+# zedops: destructive bastille verbs. No `nopass` — the operator must
+# re-auth (A5c step-up); zedops feeds the password to doas via stdin.
+permit zedops as root cmd bastille args destroy
+permit zedops as root cmd bastille args export
+permit zedops as root cmd bastille args migrate
+permit zedops as root cmd bastille args rename
+
+# ----------------------------------------------------------------------
+# zedops: zfs read paths. set is on the no-prompt list because
+# `com.zed:*` user-property writes happen on every converge.
+permit nopass zedops as root cmd zfs args list
+permit nopass zedops as root cmd zfs args get
+permit nopass zedops as root cmd zfs args set
+permit nopass zedops as root cmd zfs args snapshot
+permit nopass zedops as root cmd zfs args mount
+permit nopass zedops as root cmd zfs args unmount
+permit nopass zedops as root cmd zfs args create
+
+# zedops: destructive zfs verbs. Step-up gated.
+permit zedops as root cmd zfs args destroy
+permit zedops as root cmd zfs args rollback
+permit zedops as root cmd zfs args promote
+
+# ----------------------------------------------------------------------
+# zedops: pf state inspection (read-only). No reload here on purpose —
+# that's a network-affecting mutation and should be step-up gated when
+# A5c lands.
+permit nopass zedops as root cmd pfctl args -s
+permit nopass zedops as root cmd pfctl args -sr
+permit nopass zedops as root cmd pfctl args -ss
+
+permit zedops as root cmd pfctl args -F
+permit zedops as root cmd pfctl args -f
+
+# ----------------------------------------------------------------------
+# Service control for bastille rc.d.
+permit nopass zedops as root cmd service args bastille

@@ -12,7 +12,31 @@ defmodule Zed.MixProject do
       escript: [main_module: Zed.CLI],
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_targets: ["all"],
+      make_clean: ["clean"],
+      releases: releases(),
       description: "Declarative BEAM deployment on ZFS. FreeBSD and illumos."
+    ]
+  end
+
+  # Two release targets bake the A5a privilege boundary into the
+  # deploy unit. The same `:zed` application is built twice; the only
+  # thing that differs is `ZED_ROLE`, exported via release env so
+  # `Zed.Role.current/0` returns `:web` or `:ops` at boot. Modules are
+  # identical across releases — the boundary is a process boundary.
+  defp releases do
+    [
+      zedweb: [
+        include_executables_for: [:unix],
+        applications: [zed: :permanent],
+        cookie: "zed_web_cookie_overridden_at_deploy"
+      ],
+      zedops: [
+        include_executables_for: [:unix],
+        applications: [zed: :permanent],
+        cookie: "zed_ops_cookie_overridden_at_deploy"
+      ]
     ]
   end
 
@@ -46,6 +70,9 @@ defmodule Zed.MixProject do
       # pairing terms (zed_admin OTT payload) without forking the
       # ANSI QR logic.
       {:probnik_qr, path: "../probnik_qr"},
+
+      # Build (A5a.2): peer_cred.so NIF for getpeereid / SO_PEERCRED.
+      {:elixir_make, "~> 0.7", runtime: false},
 
       # Test
       {:propcheck, "~> 1.4", only: :test, runtime: false},

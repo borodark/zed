@@ -50,7 +50,7 @@ defmodule Zed.Platform.Bastille.Runner.System do
   @impl true
   def run(:destroy, [name | rest], _opts) do
     bastille = Zed.Platform.Bastille.binary()
-    sudo_prefix = privilege_prefix_string()
+    esc_prefix = escalation_prefix_string()
 
     extra =
       rest
@@ -64,7 +64,7 @@ defmodule Zed.Platform.Bastille.Runner.System do
     # so a running jail is stopped first regardless of caller's prior
     # Bastille.stop/1. `yes |` answers the "Are you sure?" prompt that
     # fires even with -a -f.
-    cmd = "yes | #{sudo_prefix}#{bastille} destroy -a -f #{shell_escape(name)} #{extra}"
+    cmd = "yes | #{esc_prefix}#{bastille} destroy -a -f #{shell_escape(name)} #{extra}"
     System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
   end
 
@@ -72,7 +72,7 @@ defmodule Zed.Platform.Bastille.Runner.System do
     bastille = Zed.Platform.Bastille.binary()
     full_args = [Atom.to_string(subcommand) | argv]
 
-    case Zed.Platform.Bastille.privilege_prefix() do
+    case Zed.Platform.Bastille.escalation() do
       nil ->
         System.cmd(bastille, full_args, stderr_to_stdout: true)
 
@@ -81,8 +81,8 @@ defmodule Zed.Platform.Bastille.Runner.System do
     end
   end
 
-  defp privilege_prefix_string do
-    case Zed.Platform.Bastille.privilege_prefix() do
+  defp escalation_prefix_string do
+    case Zed.Platform.Bastille.escalation() do
       nil -> ""
       esc when is_binary(esc) -> esc <> " "
     end
