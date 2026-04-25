@@ -118,39 +118,39 @@ See [docs/gpu-cluster.md](docs/gpu-cluster.md) for the full vision.
 git clone <repo>
 cd zed
 mix deps.get
-mix compile
+mix compile          # builds priv/peer_cred.so via elixir_make
 
 # Run tests
-mix test                      # 37 unit tests
-mix test --include zfs_live   # + 21 ZFS integration tests
+mix test                                       # 216 unit/integration tests
+ZED_TEST_DATASET=<pool>/zed-test \
+  doas mix test --include zfs_live             # + 24 ZFS-on-FreeBSD tests
+mix test --include bastille_live               # + 7 Bastille-on-FreeBSD tests
 ```
 
 ## Requirements
 
 - FreeBSD or illumos (Linux for dev/test only)
-- ZFS pool with delegated dataset
+- ZFS pool with a delegated test subtree (any name; pass via `ZED_TEST_DATASET`)
 - Erlang/OTP 26+, Elixir 1.17+
+- C compiler for the `peer_cred` NIF (`cc` from FreeBSD base; `gcc`/`clang` on Linux)
 
-## Project Status
+## Iteration Arc
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1 | ✅ Done | DSL, IR, convergence engine, ZFS ops |
-| 1b | ✅ Done | Wire DSL to real ZFS |
-| 3 | ✅ Done | Jail verb, jail.conf.d generation |
-| 4 | ✅ Done | Multi-host via Erlang distribution |
-| 5 | Planned | Cluster verb, secrets, Burrito builds |
+The roadmap lives in [`specs/iteration-plan.md`](specs/iteration-plan.md); each `A*` layer has a per-iteration spec under [`specs/`](specs/). Headline status:
 
-## Documentation
+| # | Layer | Status | Notes |
+|---|-------|--------|-------|
+| A0 | DSL slot validation | ✅ Done | Compile-time `storage:` mode check |
+| A1 | `Zed.Bootstrap` (init / status / **rotate** / verify / export-pubkey) | ✅ Done | Encrypted `<base>/zed/secrets`, fingerprint-stamped ZFS properties, archived rotation history |
+| A2a | Phoenix LiveView admin foundation | ✅ Done | Password login + 8h session + dashboard |
+| A2b | QR admin first-login | ✅ Done | `Zed.QR` + `Zed.Admin.OTT` (single-use, rate-limited, audit-logged) |
+| A3 | Passkey (WebAuthn) auth | ✅ Done | `wax_`-backed; Chrome desktop + Safari iOS + Chrome Android |
+| A4 | SSH-key challenge auth | ✅ Done | `ssh-keygen -Y sign` flow + login script |
+| A5.1 | Bastille jail adapter | ✅ Done | 540 LOC; live-verified after seven real-world bugs ([blog](https://www.dataalienist.com/blog-lie-at-exit-zero.html)) |
+| A5a | **Privilege boundary** (zedweb / zedops split) | ✅ Done | Two `mix release` targets, Unix-socket transport, `getpeereid(2)` NIF, capability-scoped doas, `host-bring-up.sh` |
+| B0 | `zedz` mobile QR scanner | Planned | Fork of probnik with `zed_admin` payload handler |
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
-- [CLAUDE.md](CLAUDE.md) — Project context and architecture
-- [docs/MULTI_HOST_TEST.md](docs/MULTI_HOST_TEST.md) — Multi-host test setup
-- [docs/SECRETS_DESIGN.md](docs/SECRETS_DESIGN.md) — Phase 5 secrets pipeline (design proposal)
-- [docs/gpu-cluster.md](docs/gpu-cluster.md) — GPU cluster vision
-- [docs/pitches.md](docs/pitches.md) — Why ZFS properties replace etcd
-- [docs/market.md](docs/market.md) — Market analysis
-- [docs/BLOG_ZED_MANIFESTO.md](docs/BLOG_ZED_MANIFESTO.md) — The manifesto
+Layers C (NAS-adjacent: SMB + Time Machine) and D (Probnik Vault + Shamir) are shelved per the iteration plan; unshelve only on explicit decision.
 
 ## Architecture
 
@@ -158,26 +158,47 @@ mix test --include zfs_live   # + 21 ZFS integration tests
 DSL (macros) → IR (validated) → Converge (diff→plan→execute) → ZFS
                                        ↓
                               Agent ←──:rpc.call──→ Cluster
+
+After A5a:
+   zedweb (no privilege)         zedops (capability-scoped doas)
+   ────────                      ────────
+   Phoenix endpoint              Zed.Ops.Socket   ── Unix socket
+   OpsClient.Pool ──────►        (peer-cred check on accept)
+                                 Zed.Ops.Bastille.Handler
+                                 Runner.System  ──► doas bastille …
 ```
 
-## Contributing
+## Documentation
 
-**PRs are welcome!** See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+**Specs (the plan)**
+- [specs/iteration-plan.md](specs/iteration-plan.md) — full roadmap, decisions log, layer rollup
+- [specs/a5-bastille-plan.md](specs/a5-bastille-plan.md) — Bastille adapter design (A5)
+- [specs/a5a-privilege-boundary.md](specs/a5a-privilege-boundary.md) — privilege boundary spec (A5a)
+- [specs/b0-zedz-plan.md](specs/b0-zedz-plan.md) — mobile companion (B0)
+- [specs/qr-schema.md](specs/qr-schema.md) — QR payload term shapes
 
-### Roadmap
+**Operational**
+- [docs/doas.conf.zedops](docs/doas.conf.zedops) — production doas template (capability-scoped)
+- [docs/SECRETS_DESIGN.md](docs/SECRETS_DESIGN.md) — secrets pipeline design
+- [docs/MULTI_HOST_TEST.md](docs/MULTI_HOST_TEST.md) — multi-host test setup
+- [scripts/host-bring-up.sh](scripts/host-bring-up.sh) — idempotent FreeBSD setup
+- [scripts/verify-bastille-host.sh](scripts/verify-bastille-host.sh) — readiness checker
+- [scripts/a5a-live-runbook.md](scripts/a5a-live-runbook.md) — Mac Pro live-test runbook
 
-| Phase | Status | What's Needed |
-|-------|--------|---------------|
-| 5 | Next | `cluster` verb, secrets, Burrito builds |
-| 6 | Planned | illumos parity (SMF, zones) |
-| 7 | Vision | GPU cluster: `node`, `model`, `job` verbs |
-| 8 | Ideas | mDNS discovery, web dashboard, metrics |
+**Background**
+- [docs/BLOG_ZED_MANIFESTO.md](docs/BLOG_ZED_MANIFESTO.md) — the manifesto
+- [docs/gpu-cluster.md](docs/gpu-cluster.md) — GPU cluster vision
+- [docs/pitches.md](docs/pitches.md) — why ZFS properties replace etcd
+- [docs/market.md](docs/market.md) — market analysis
+- [docs/elixirforum-update-1.md](docs/elixirforum-update-1.md) — community progress note
 
-### Good First Issues
-- Add more health check types (TCP, HTTP)
-- Improve error messages
-- More examples in `lib/zed/examples/`
-- Documentation improvements
+**Project meta**
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
+- [CLAUDE.md](CLAUDE.md) — project context and architecture
+
+## Status
+
+Pre-1.0, design-iterating, single-maintainer. The iteration plan is being walked one layer at a time with live FreeBSD verification after each landed merge. Issues / PRs are welcome but expect short discussion before sizable changes — the design surface is still being negotiated.
 
 ## License
 
