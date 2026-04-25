@@ -83,10 +83,12 @@ else
     warn "/usr/local/etc/bastille/bastille.conf missing"
 fi
 
-ZFSEN=$(grep -E '^bastille_zfs_enable=' /usr/local/etc/bastille/bastille.conf 2>/dev/null \
-        | cut -d= -f2 | tr -d '"')
-ZPOOL=$(grep -E '^bastille_zfs_zpool=' /usr/local/etc/bastille/bastille.conf 2>/dev/null \
-        | cut -d= -f2 | tr -d '"')
+# sysrc -f handles shell-quoted values and strips inline comments
+# reliably; grep + cut broke on lines like
+#   bastille_zfs_enable="YES"  ## default: "NO"
+# which leaked the comment into the captured value.
+ZFSEN=$(sysrc -f /usr/local/etc/bastille/bastille.conf -n bastille_zfs_enable 2>/dev/null || printf '')
+ZPOOL=$(sysrc -f /usr/local/etc/bastille/bastille.conf -n bastille_zfs_zpool 2>/dev/null || printf '')
 
 case "$ZFSEN" in
     YES|yes)
