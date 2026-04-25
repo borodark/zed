@@ -8,7 +8,17 @@ defmodule Zed.Platform.BastilleIntegrationTest do
       # On a host that passed scripts/verify-bastille-host.sh --smoke:
       mix test --only bastille_live test/zed/platform/bastille_integration_test.exs
 
-  Each test gets a unique jail name `zed-test-<unique-int>` so
+  ## Privilege
+
+  After A5a.5 the test no longer touches the runner config. The
+  posture is: `Runner.System` always shells out via `doas`, and the
+  user that runs `mix test` must hold the relevant doas rules — in
+  production, `zedops` (per `docs/doas.conf.zedops`); on Mac dev
+  hosts running with the relaxed bring-up posture, any wheel member
+  with the `permit nopass :wheel as root cmd bastille args ...`
+  rules from the same template.
+
+  Each test gets a unique jail name `zed-test-<rand-hex>` so
   parallel test files / re-runs don't collide on the verify-sandbox
   IP space (`10.17.89.0/24`).
 
@@ -22,24 +32,6 @@ defmodule Zed.Platform.BastilleIntegrationTest do
   alias Zed.Platform.Bastille
 
   @cidr_pool "10.17.89."
-
-  setup_all do
-    # Bastille refuses to run as a non-root user; test runner is
-    # typically the io user with a wheel-doas rule that allows
-    # `cmd bastille` without password. See doas.conf:
-    #   permit nopass :wheel as root cmd bastille
-    prev = Application.get_env(:zed, Zed.Platform.Bastille, [])
-
-    Application.put_env(
-      :zed,
-      Zed.Platform.Bastille,
-      Keyword.put(prev, :privilege_prefix, System.get_env("ZED_BASTILLE_SUDO", "doas"))
-    )
-
-    on_exit(fn -> Application.put_env(:zed, Zed.Platform.Bastille, prev) end)
-
-    :ok
-  end
 
   setup do
     # 32 bits of entropy in the name. unique_integer/1 + os_time
