@@ -23,6 +23,24 @@ defmodule Zed.Platform.BastilleIntegrationTest do
 
   @cidr_pool "10.17.89."
 
+  setup_all do
+    # Bastille refuses to run as a non-root user; test runner is
+    # typically the io user with a wheel-doas rule that allows
+    # `cmd bastille` without password. See doas.conf:
+    #   permit nopass :wheel as root cmd bastille
+    prev = Application.get_env(:zed, Zed.Platform.Bastille, [])
+
+    Application.put_env(
+      :zed,
+      Zed.Platform.Bastille,
+      Keyword.put(prev, :privilege_prefix, System.get_env("ZED_BASTILLE_SUDO", "doas"))
+    )
+
+    on_exit(fn -> Application.put_env(:zed, Zed.Platform.Bastille, prev) end)
+
+    :ok
+  end
+
   setup do
     name = "zed-test-#{System.unique_integer([:positive])}"
     # Octet 100..199 carved out for adapter tests; verify-sandbox uses 249.
