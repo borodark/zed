@@ -37,18 +37,27 @@ that `priv/` exists at the project root (the `_build/.../priv`
 symlink target). `ls -la priv` — empty dir is fine; missing dir
 will fail.
 
-## Warm doas persist (non-interactive run)
+## doas persist (only matters if your rule lacks `nopass`)
 
-The new `Runner.System` always shells `doas bastille ...`. The
-existing wheel rule on the Mac Pro requires a password unless
-`persist` is cached. Warm it once:
+The new `Runner.System` always shells `doas bastille ...`. If your
+existing /usr/local/etc/doas.conf has the A5.1-era catch-all rule:
 
-```sh
-doas -v
+```
+permit nopass :wheel as :root cmd bastille
 ```
 
-Persist is cached for 5 minutes by default; long enough for the
-test suite.
+then no warm-up is needed — `nopass` runs without prompting forever.
+
+If your rule uses `persist` instead (e.g. `permit persist :wheel as
+root`), seed the persist timestamp with a no-op as root:
+
+```sh
+doas /usr/bin/true
+```
+
+(FreeBSD's doas port has no `-v` verify-only flag; that's an
+OpenBSD-only convenience. Run any trivial command as root to seed
+the timestamp file in /var/db/doas.)
 
 ## Run
 
