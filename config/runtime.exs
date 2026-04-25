@@ -1,5 +1,15 @@
 import Config
 
+# Role dispatch (A5a.1) — `ZED_ROLE` selects which supervisor branch
+# `Zed.Application` starts at boot. `mix release` exports the role per
+# target; `mix test` and `iex -S mix` leave it unset so the default is
+# `:full` (all bits start; `zed serve` still drives the endpoint).
+case System.get_env("ZED_ROLE") do
+  nil -> :ok
+  role when role in ["web", "ops", "full"] -> config :zed, :role, String.to_atom(role)
+  other -> raise "ZED_ROLE=#{inspect(other)} not in [web, ops, full]"
+end
+
 # Runtime configuration — applied when `zed serve` starts the endpoint.
 # CLI verbs that don't need the endpoint (bootstrap init, status, ...)
 # never hit this path because they don't set ZED_SERVE=1.

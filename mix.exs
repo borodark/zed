@@ -12,7 +12,28 @@ defmodule Zed.MixProject do
       escript: [main_module: Zed.CLI],
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
+      releases: releases(),
       description: "Declarative BEAM deployment on ZFS. FreeBSD and illumos."
+    ]
+  end
+
+  # Two release targets bake the A5a privilege boundary into the
+  # deploy unit. The same `:zed` application is built twice; the only
+  # thing that differs is `ZED_ROLE`, exported via release env so
+  # `Zed.Role.current/0` returns `:web` or `:ops` at boot. Modules are
+  # identical across releases — the boundary is a process boundary.
+  defp releases do
+    [
+      zedweb: [
+        include_executables_for: [:unix],
+        applications: [zed: :permanent],
+        cookie: "zed_web_cookie_overridden_at_deploy"
+      ],
+      zedops: [
+        include_executables_for: [:unix],
+        applications: [zed: :permanent],
+        cookie: "zed_ops_cookie_overridden_at_deploy"
+      ]
     ]
   end
 
