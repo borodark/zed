@@ -7,8 +7,8 @@ defmodule Zed.Converge.Step do
 
   @type t :: %__MODULE__{
           id: String.t(),
-          type: :dataset | :app | :service | :snapshot,
-          action: :create | :update | :start | :stop | :restart,
+          type: :dataset | :app | :service | :snapshot | :jail | :jail_pkg | :jail_mount | :jail_svc,
+          action: :create | :update | :install | :start | :stop | :restart,
           args: map(),
           deps: [String.t()]
         }

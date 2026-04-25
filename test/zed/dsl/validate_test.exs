@@ -323,4 +323,101 @@ defmodule Zed.IR.ValidateTest do
       assert %Zed.IR{} = Validate.run!(ir)
     end
   end
+
+  describe "jail packages validation (S3)" do
+    test "accepts valid packages list" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{packages: ["postgresql16-server"]}}
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "rejects non-list packages" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{packages: "postgresql16-server"}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/packages must be a list/, fn ->
+        Validate.run!(ir)
+      end
+    end
+
+    test "rejects non-string package entry" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{packages: [:postgresql16]}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/packages entry must be a string/, fn ->
+        Validate.run!(ir)
+      end
+    end
+  end
+
+  describe "jail depends_on validation (S3)" do
+    test "accepts depends_on referencing a declared jail" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{}},
+          %Node{id: :myapp, type: :jail, config: %{depends_on: :pg}}
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "accepts depends_on list" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{}},
+          %Node{id: :ch, type: :jail, config: %{}},
+          %Node{id: :plausible, type: :jail, config: %{depends_on: [:pg, :ch]}}
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "rejects depends_on referencing undeclared jail" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :myapp, type: :jail, config: %{depends_on: :ghost_jail}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/depends_on :ghost_jail/, fn ->
+        Validate.run!(ir)
+      end
+    end
+  end
 end

@@ -13,6 +13,8 @@ defmodule Zed.IR.Validate do
     check_pool(ir)
     check_dataset_refs(ir)
     check_jail_contains(ir)
+    check_jail_packages(ir)
+    check_jail_depends_on(ir)
     check_no_inline_secrets(ir)
     check_secret_refs(ir)
     check_cluster_cookies(ir)
@@ -50,6 +52,46 @@ defmodule Zed.IR.Validate do
         raise Zed.ValidationError,
               "jail #{inspect(jail.id)} contains #{inspect(contained)} which is not a declared app"
       end
+    end)
+  end
+
+  # Jail :packages must be a list of binary strings.
+  defp check_jail_packages(%IR{} = ir) do
+    Enum.each(ir.jails, fn jail ->
+      case jail.config[:packages] do
+        nil -> :ok
+        pkgs when is_list(pkgs) ->
+          Enum.each(pkgs, fn p ->
+            unless is_binary(p) do
+              raise Zed.ValidationError,
+                    "jail #{inspect(jail.id)} :packages entry must be a string, got #{inspect(p)}"
+            end
+          end)
+        other ->
+          raise Zed.ValidationError,
+                "jail #{inspect(jail.id)} :packages must be a list, got #{inspect(other)}"
+      end
+    end)
+  end
+
+  # Jail :depends_on entries must reference declared jail IDs.
+  defp check_jail_depends_on(%IR{} = ir) do
+    known = MapSet.new(Enum.map(ir.jails, & &1.id))
+
+    Enum.each(ir.jails, fn jail ->
+      deps =
+        case jail.config[:depends_on] do
+          nil -> []
+          dep when is_atom(dep) -> [dep]
+          deps when is_list(deps) -> deps
+        end
+
+      Enum.each(deps, fn dep ->
+        unless dep in known do
+          raise Zed.ValidationError,
+                "jail #{inspect(jail.id)} depends_on #{inspect(dep)} which is not a declared jail"
+        end
+      end)
     end)
   end
 

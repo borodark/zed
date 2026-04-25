@@ -108,6 +108,20 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  # --- Jail sub-steps (stubs — real Bastille wiring is S6) ---
+
+  defp execute_step(%Step{type: :jail_pkg, action: :install, args: args}, _platform) do
+    {:ok, {:jail_pkg_pending, args.jail, args.packages}}
+  end
+
+  defp execute_step(%Step{type: :jail_mount, action: :create, args: args}, _platform) do
+    {:ok, {:jail_mount_pending, args.jail, args.host_path, args.jail_path}}
+  end
+
+  defp execute_step(%Step{type: :jail_svc, action: :start, args: args}, _platform) do
+    {:ok, {:jail_svc_pending, args.jail, args.service}}
+  end
+
   defp execute_step(%Step{} = step, _platform) do
     {:error, {:unknown_step, step.type, step.action}}
   end
