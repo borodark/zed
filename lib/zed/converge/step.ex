@@ -1,6 +1,9 @@
 defmodule Zed.Converge.Step do
   @moduledoc """
   A single convergence step — one atomic operation in the execution plan.
+
+  Types: `:dataset`, `:app`, `:service`, `:snapshot`, `:jail`,
+  `:jail_pkg`, `:jail_mount`, `:jail_svc`.
   """
 
   defstruct [:id, :type, :action, :args, deps: []]

@@ -6,22 +6,48 @@ defmodule Zed.DSL do
   verb macros accumulate declarations, `@before_compile` validates and
   generates `converge/1`, `diff/0`, `rollback/1`, `status/0`.
 
+  ## Top-level verbs
+
+    * `dataset` — ZFS dataset with properties (mountpoint, compression, etc.)
+    * `app` — BEAM release with version, node_name, cookie, health checks
+    * `jail` — FreeBSD jail wrapping datasets and optionally containing an app
+    * `zone` — illumos zone (same shape as jail)
+    * `cluster` — distributed Erlang topology (libcluster config)
+    * `snapshots` — pre-deploy snapshot policy
+
+  ## Jail-specific verbs
+
+  Inside a `jail` block, additional verbs are available:
+
+    * `packages ["pkg1", "pkg2"]` — packages to install via `pkg`
+    * `service :name, opts` — rc.d service to start inside the jail
+    * `nullfs_mount host_path, into: jail_path, mode: :ro` — nullfs mount
+    * `dataset "path", mount_in_jail: "/mount"` — data volume mount
+    * `depends_on :other_jail` — jail boot ordering
+    * `app :name do...end` — inline app (desugars into a top-level app
+      with `contains` set on the jail automatically)
+
   ## Example
 
       defmodule MyInfra.Prod do
         use Zed.DSL
 
         deploy :prod, pool: "tank" do
-          dataset "apps/myapp" do
-            mountpoint "/opt/myapp"
+          dataset "jails/web" do
             compression :lz4
           end
 
-          app :myapp do
-            dataset "apps/myapp"
-            version "1.0.0"
-            node_name :"myapp@host1"
-            cookie {:env, "RELEASE_COOKIE"}
+          jail :web do
+            dataset "jails/web"
+            ip4 "10.0.1.10/24"
+            packages ["erlang-runtime27"]
+
+            app :myapp do
+              version "1.0.0"
+              node_name :"myapp@10.0.1.10"
+              cookie {:env, "RELEASE_COOKIE"}
+              health :http, url: "http://10.0.1.10:4000/health", expect: 200
+            end
           end
 
           snapshots do
