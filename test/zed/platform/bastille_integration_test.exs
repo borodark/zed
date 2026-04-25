@@ -42,12 +42,12 @@ defmodule Zed.Platform.BastilleIntegrationTest do
   end
 
   setup do
-    # System.unique_integer/1 resets per VM start. Successive
-    # `mix test` invocations can collide on zed-test-1, zed-test-2…
-    # if a prior run left a jail behind (e.g. timed-out test that
-    # didn't run on_exit). Compose with os_time(:second) so the name
-    # is unique across runs as well as within one.
-    suffix = "#{System.os_time(:second)}-#{System.unique_integer([:positive])}"
+    # 32 bits of entropy in the name. unique_integer/1 + os_time
+    # had collision modes when two test runs landed in the same
+    # second AND the per-VM counter reset to overlapping values
+    # AND a prior run didn't clean up. Random bytes sidestep all
+    # three.
+    suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
     name = "zed-test-#{suffix}"
     # Octet 100..199 carved out for adapter tests; verify-sandbox uses 249.
     octet = 100 + rem(System.unique_integer([:positive]), 100)
