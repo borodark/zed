@@ -2,15 +2,19 @@ defmodule Zed.BootstrapIntegrationTest do
   @moduledoc """
   Integration tests for Zed.Bootstrap against real ZFS.
 
-  Runs against the jail-delegated subtree `jeff/zed-test/*`. Each test
-  gets a unique `jeff/zed-test/bootstrap-test-<int>` base + its own
-  temp mountpoint; on exit the base is destroyed recursively and the
-  mountpoint directory is removed.
+  Runs against a delegated test subtree. Default `jeff/zed-test/*`
+  matches the original NAS layout; on hosts with a different pool
+  (e.g. Mac Pro running on `zroot`), set `ZED_TEST_DATASET` to the
+  delegated parent before running:
 
-  Tagged `:zfs_live`; excluded from default runs. Require root on
+      ZED_TEST_DATASET=zroot/zed-test doas mix test --include zfs_live
+
+  Each test gets a unique `<parent>/bootstrap-test-<int>` base + its
+  own temp mountpoint; on exit the base is destroyed recursively and
+  the mountpoint directory is removed.
+
+  Tagged `:zfs_live`; excluded from default runs. Requires root on
   FreeBSD to mount the encrypted dataset.
-
-  Run with: `sudo mix test --include zfs_live`
   """
 
   use ExUnit.Case, async: false
@@ -21,11 +25,17 @@ defmodule Zed.BootstrapIntegrationTest do
   alias Zed.ZFS
   alias Zed.ZFS.Property
 
-  @parent "jeff/zed-test"
+  # Test parent dataset, parametrised so the suite runs on any host
+  # with a delegated test subtree. Aligns with the same env var the
+  # other :zfs_live tests already use (zfs/integration_test.exs,
+  # converge/integration_test.exs).
+  defp parent_dataset do
+    System.get_env("ZED_TEST_DATASET", "jeff/zed-test")
+  end
 
   setup do
     unique = :erlang.unique_integer([:positive])
-    base = "#{@parent}/bootstrap-test-#{unique}"
+    base = "#{parent_dataset()}/bootstrap-test-#{unique}"
     mountpoint = Path.join(System.tmp_dir!(), "zed-btest-#{unique}")
     passphrase = "test-passphrase-#{unique}"
 
@@ -226,6 +236,133 @@ defmodule Zed.BootstrapIntegrationTest do
     test "returns {:error, :no_pubkey} for single-value slot", ctx do
       {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
       assert {:error, :no_pubkey} = Bootstrap.export_pubkey(ctx.base, :beam_cookie)
+    end
+  end
+
+  describe "rotate/3" do
+    test "rotates beam_cookie: file changes, fingerprint updates, archive carries old value",
+         ctx do
+      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
+
+      cookie_path = Path.join(ctx.mountpoint, "beam_cookie")
+      old_value = File.read!(cookie_path)
+
+      props_before = Property.get_all("#{ctx.base}/zed")
+      old_fp = props_before["secret.beam_cookie.fingerprint"]
+
+      assert {:ok, result} = Bootstrap.rotate(ctx.base, :beam_cookie)
+      assert result.slot == :beam_cookie
+      assert result.prev_fingerprint == old_fp
+      assert result.new_fingerprint =~ ~r/^sha256:[0-9a-f]{64}$/
+      refute result.new_fingerprint == old_fp
+      assert result.rotation_count == 1
+      assert result.restart_plan == [:beam]
+
+      # Live file is the new value, not the old one.
+      new_value = File.read!(cookie_path)
+      refute new_value == old_value
+
+      # Archive directory exists with the old value intact.
+      assert File.dir?(result.archive_path)
+      archived = File.read!(Path.join(result.archive_path, "beam_cookie"))
+      assert archived == old_value
+
+      # Properties reflect the rotation.
+      props_after = Property.get_all("#{ctx.base}/zed")
+      assert props_after["secret.beam_cookie.fingerprint"] == result.new_fingerprint
+      assert props_after["secret.beam_cookie.prev_fingerprint"] == old_fp
+      assert props_after["secret.beam_cookie.rotation_count"] == "1"
+      assert props_after["secret.beam_cookie.last_rotated_at"] =~ ~r/^\d{4}-\d{2}-\d{2}T/
+    end
+
+    test "rotation_count keeps incrementing across multiple rotations", ctx do
+      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
+
+      assert {:ok, %{rotation_count: 1}} = Bootstrap.rotate(ctx.base, :beam_cookie)
+      assert {:ok, %{rotation_count: 2}} = Bootstrap.rotate(ctx.base, :beam_cookie)
+      assert {:ok, %{rotation_count: 3}} = Bootstrap.rotate(ctx.base, :beam_cookie)
+    end
+
+    test "creates pre/post snapshots on the zed dataset", ctx do
+      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
+
+      assert {:ok, %{snapshot_pre: pre, snapshot_post: post}} =
+               Bootstrap.rotate(ctx.base, :beam_cookie)
+
+      # 14 digits (\d{8}T\d{6}) for second-resolution stamp + 6 digits
+      # micros = 20 digits total after the slot name.
+      assert pre =~ ~r|@rotate-pre-beam_cookie-\d{8}T\d{12}$|
+      assert post =~ ~r|@rotate-post-beam_cookie-\d{8}T\d{12}$|
+
+      # Both snapshots exist on the zed dataset.
+      {:ok, _} = ZFS.cmd(["list", "-t", "snapshot", "-H", "-o", "name", pre])
+      {:ok, _} = ZFS.cmd(["list", "-t", "snapshot", "-H", "-o", "name", post])
+    end
+
+    test "rotates ssh_host_ed25519: archives both priv and pub", ctx do
+      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
+
+      priv_path = Path.join(ctx.mountpoint, "ssh_host_ed25519")
+      pub_path = priv_path <> ".pub"
+      old_priv = File.read!(priv_path)
+      old_pub = File.read!(pub_path)
+
+      assert {:ok, result} = Bootstrap.rotate(ctx.base, :ssh_host_ed25519)
+
+      # Both files archived under the slot's archive directory.
+      assert File.read!(Path.join(result.archive_path, "ssh_host_ed25519")) == old_priv
+      assert File.read!(Path.join(result.archive_path, "ssh_host_ed25519.pub")) == old_pub
+
+      # New keys are different.
+      refute File.read!(priv_path) == old_priv
+      refute File.read!(pub_path) == old_pub
+
+      # Restart plan names sshd.
+      assert result.restart_plan == [:sshd]
+    end
+
+    test "rotates admin_passwd with supplied :plaintext, hashes it, surfaces it once", ctx do
+      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
+
+      new_plaintext = "operator-chosen-rotation-#{:rand.uniform(999_999)}"
+
+      assert {:ok, result} =
+               Bootstrap.rotate(ctx.base, :admin_passwd, plaintext: new_plaintext)
+
+      assert result.restart_plan == [:zed_web]
+
+      # Banner carries the operator-supplied plaintext exactly once.
+      assert Enum.any?(result.banner, fn
+               {:admin_passwd, :plaintext_once, ^new_plaintext} -> true
+               _ -> false
+             end)
+
+      # Stored file is the PHC hash, not the plaintext.
+      stored = File.read!(Path.join(ctx.mountpoint, "admin_passwd"))
+      refute stored =~ new_plaintext
+      assert stored =~ ~r/^\$pbkdf2-sha256\$/
+    end
+
+    test "verify/1 returns :ok after rotate (post-condition)", ctx do
+      {:ok, _} = Bootstrap.init(ctx.base, passphrase: ctx.passphrase, mountpoint: ctx.mountpoint)
+
+      assert {:ok, _} = Bootstrap.rotate(ctx.base, :beam_cookie)
+
+      results = Bootstrap.verify(ctx.base)
+      cookie = Enum.find(results, &(&1.slot == :beam_cookie))
+      assert cookie.status == :ok
+    end
+
+    test "unknown slot returns :unknown_slot", ctx do
+      assert {:error, :unknown_slot} = Bootstrap.rotate(ctx.base, :elephant_passwd)
+    end
+
+    test ":slot_not_generated when nothing has been bootstrapped yet", ctx do
+      # Don't init; rotate should refuse rather than minting a fresh
+      # value (which would be init's job, not rotate's).
+      {:ok, _} = Zed.ZFS.Dataset.create("#{ctx.base}/zed", %{canmount: "off"})
+
+      assert {:error, :slot_not_generated} = Bootstrap.rotate(ctx.base, :beam_cookie)
     end
   end
 end
