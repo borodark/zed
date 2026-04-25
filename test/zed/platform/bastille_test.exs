@@ -82,21 +82,56 @@ defmodule Zed.Platform.BastilleTest do
   end
 
   describe "destroy/2" do
-    test "dispatches with just name (the runner adds yes-pipe + -f)" do
+    # destroy/2 invokes :destroy via the runner, then a follow-up
+    # :list call to verify the post-condition (see "Bastille
+    # exits 0 while leaving the jail in place" comment in
+    # Bastille.destroy/2). The Mock expectation has to cover both.
+    test "dispatches :destroy then verifies via :list" do
       Mock.expect(:destroy, {"foo: removed\n", 0})
+      Mock.expect(:list, {"JID Name\n", 0})
       assert :ok = Bastille.destroy("foo")
-      assert [{:destroy, ["foo"], _}] = Mock.calls()
+      assert [{:destroy, ["foo"], _}, {:list, [], _}] = Mock.calls()
     end
 
     test "preserves opts to runner (so e.g. :force can flow through)" do
       Mock.expect(:destroy, {"", 0})
+      Mock.expect(:list, {"JID Name\n", 0})
       Bastille.destroy("foo", force: true)
-      assert [{:destroy, ["foo"], [force: true]}] = Mock.calls()
+      assert [{:destroy, ["foo"], [force: true]}, {:list, [], _}] = Mock.calls()
     end
 
-    test "surfaces error" do
+    test "surfaces error and skips post-condition check on non-zero exit" do
       Mock.expect(:destroy, {"jail busy", 2})
       assert {:error, {:bastille_exit, 2, "jail busy"}} = Bastille.destroy("foo")
+      # No :list call because destroy already failed.
+      assert [{:destroy, ["foo"], _}] = Mock.calls()
+    end
+
+    test "returns {:error, :destroy_did_nothing} when bastille exits 0 but jail still listed" do
+      # Bastille 1.4 has been observed to exit 0 with a "Jail is
+      # running. Use -a to auto-stop." message while leaving the
+      # jail in place. The adapter's post-condition check catches
+      # this regardless of bastille version.
+      Mock.expect(:destroy, {"Jail is running.\nUse [-a|--auto] to auto-stop the jail.\n", 0})
+
+      Mock.expect(:list, {
+        " JID  Name  Boot  Prio  State  Type  IP Address  Published Ports  Release  Tags\n" <>
+          "  3   foo   on    99    Up     thin  10.0.0.5    -                15.0-RELEASE  -\n",
+        0
+      })
+
+      assert {:error, {:destroy_did_nothing, "foo"}} = Bastille.destroy("foo")
+    end
+
+    test "returns :ok when bastille exits 0 and follow-up list confirms gone" do
+      Mock.expect(:destroy, {"foo: removed\n", 0})
+
+      Mock.expect(:list, {
+        " JID  Name  Boot  Prio  State  Type  IP Address  Published Ports  Release  Tags\n",
+        0
+      })
+
+      assert :ok = Bastille.destroy("foo")
     end
   end
 

@@ -69,8 +69,17 @@ defmodule Zed.Platform.Bastille do
 
   @spec destroy(name :: binary(), opts :: keyword()) :: :ok | {:error, term()}
   def destroy(name, opts \\ []) when is_binary(name) and is_list(opts) do
-    with :ok <- validate_name(name) do
-      classify(runner().run(:destroy, [name], opts))
+    with :ok <- validate_name(name),
+         :ok <- classify(runner().run(:destroy, [name], opts)) do
+      # Bastille 1.4 has been observed to exit 0 while leaving the
+      # jail in place (e.g. when -a was missing for a running jail).
+      # Verify the post-condition; surface a clear error if the
+      # adapter's contract was violated by the underlying CLI.
+      if exists?(name) do
+        {:error, {:destroy_did_nothing, name}}
+      else
+        :ok
+      end
     end
   end
 
