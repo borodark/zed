@@ -1,4 +1,4 @@
-ExUnit.start(exclude: [:zfs_live])
+ExUnit.start(exclude: [:zfs_live, :bastille_live])
 
 # Endpoint must be running for LiveView/Plug tests. It's not in the
 # application supervisor (see lib/zed/application.ex — we only start
