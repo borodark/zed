@@ -22,3 +22,4 @@ zed-*.tar
 # Temporary files, for example, from tests.
 /tmp/
 .claude/settings.local.json
+priv/*.so
