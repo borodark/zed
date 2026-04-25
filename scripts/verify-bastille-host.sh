@@ -214,10 +214,15 @@ case "${1:-}" in
         # nuke it so the create call has a clean slate. Detection by
         # filesystem presence is more reliable than parsing
         # `bastille list` columns across versions.
+        #
+        # `yes |` is used rather than any -y/-a/-f combination because
+        # bastille 1.4's destroy subcommand still prints an interactive
+        # "Are you sure? [y|n]" even with -f, and the flags that skip
+        # the prompt vary across releases. Piping yes is stable.
         if [ -d "/usr/local/bastille/jails/$SANDBOX" ]; then
             warn "stale '$SANDBOX' present, destroying first"
             doas bastille stop "$SANDBOX" >>"$LOG" 2>&1 || true
-            doas bastille destroy -af "$SANDBOX" >>"$LOG" 2>&1 || true
+            yes | doas bastille destroy -f "$SANDBOX" >>"$LOG" 2>&1 || true
             doas rm -rf "/usr/local/bastille/jails/$SANDBOX" >>"$LOG" 2>&1 || true
         fi
 
@@ -240,10 +245,11 @@ case "${1:-}" in
                 bad "start failed (see $LOG)"
             fi
 
-            # -a = auto-confirm, -f = force stop-before-destroy. Without -a,
-            # bastille still prints "Are you sure? [y|n]" and waits for
-            # stdin, which the script does not provide.
-            if doas bastille destroy -af "$SANDBOX" >>"$LOG" 2>&1; then
+            # yes | ... answers the "Are you sure? [y|n]" prompt that
+            # bastille 1.4 still emits even with -f. See stale-cleanup
+            # comment above for why this pattern is preferred over any
+            # flag combo.
+            if yes | doas bastille destroy -f "$SANDBOX" >>"$LOG" 2>&1; then
                 ok "destroy"
             else
                 bad "destroy failed (see $LOG) — manual cleanup may be required"
