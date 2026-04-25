@@ -154,22 +154,23 @@ defmodule Zed.Platform.Bastille do
   def default_release, do: config(:default_release, "15.0-RELEASE")
 
   @doc """
-  Privilege-escalation command to prepend to `bastille` invocations.
+  Privilege-escalation command always prepended to `bastille` invocations
+  by `Runner.System` (A5a.5).
 
-  Bastille refuses to run as a non-root user, exiting with
-  `Bastille: Permission Denied / root / sudo / doas required`. Set
-  this to `"doas"` (or `"sudo"`) on hosts where the zed BEAM
-  process runs as a non-root user. `nil` (the default) means call
-  bastille directly — appropriate when zed runs as root or when
-  `bastille` is invoked through some other escalation already.
+  Bastille refuses to run as a non-root user. The A5a posture is that
+  every shellout goes through `doas` regardless of the calling
+  account: root, zedops, and wheel members all have rules permitting
+  the relevant verbs (see `docs/doas.conf.zedops`). Hardcoding the
+  escalation removes the per-test `privilege_prefix` knob that
+  shipped with A5.1 — the wrong layer was deciding whether to
+  escalate.
 
-      config :zed, Zed.Platform.Bastille, privilege_prefix: "doas"
+  Override exists only for tests that want to exercise Runner.System
+  on a non-doas host (or to disable escalation entirely with `nil`):
 
-  The :bastille_live integration test sets this to "doas" so the
-  test runner (typically the `io` user with a wheel-doas rule for
-  `cmd bastille`) can drive the round-trip without manual sudo.
+      config :zed, Zed.Platform.Bastille, escalation: nil
   """
-  def privilege_prefix, do: config(:privilege_prefix, nil)
+  def escalation, do: config(:escalation, "doas")
 
   # Runner selection: explicit config override wins (used by tests to
   # inject Runner.Mock); otherwise the role decides. In `:web` the
