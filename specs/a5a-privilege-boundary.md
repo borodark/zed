@@ -348,7 +348,7 @@ This makes A5a non-blocking for ongoing iteration on the Macs while still landin
 | **A5a.3** | Capability-scoped doas.conf template + `host-bring-up.sh` lays it down idempotently. | 2 h |
 | **A5a.4** | `Zed.Platform.Bastille` rewired: production code paths go through OpsClient; tests still use Mock runner unchanged. | 3 h |
 | **A5a.5** | Integration test runs as `zedops`, not via `doas`-prefixed adapter. `privilege_prefix` config removed. | 2 h |
-| **A5a.6** | Backward-compat shim for dev hosts (`ZED_PRIVILEGE_BOUNDARY=relaxed` keeps single-process behavior). | 2 h |
+| **A5a.6** | ~~Backward-compat shim for dev hosts (`ZED_PRIVILEGE_BOUNDARY=relaxed` keeps single-process behavior).~~ **Dropped 2026-04-25.** A5a.1's `:full` role default already preserves dev-host single-process behaviour; the separate env-var shim was redundant. A future "production refuses to boot in :full" guard, if needed, lands as A5a.7 (~30 min). | — |
 | **A5b.1** | `--passphrase-fd` + `--passphrase-file` options on `zed bootstrap init`. Env-var path emits deprecation warning. | 2 h |
 | **A5b.2** | `secret_key_base` slot; Phoenix endpoint reads from file at startup. | 2 h |
 | **A5b.3** | Audit log JSON-Lines writer in `Zed.Ops`. Daily zfs auto-snap of `<base>/zed/audit/`. | 4 h |
