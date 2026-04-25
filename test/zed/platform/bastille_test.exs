@@ -124,15 +124,30 @@ defmodule Zed.Platform.BastilleTest do
       refute Bastille.exists?("ghost")
     end
 
-    test "returns true when the directory exists" do
+    test "returns true when jail.conf exists under <jails_dir>/<name>" do
       tmp = Path.join(System.tmp_dir!(), "zed-bastille-test-#{:erlang.unique_integer([:positive])}")
       jail = Path.join(tmp, "ghost")
       File.mkdir_p!(jail)
+      File.write!(Path.join(jail, "jail.conf"), "ghost { }")
       on_exit(fn -> File.rm_rf!(tmp) end)
 
       Application.put_env(:zed, Zed.Platform.Bastille, runner: Mock, jails_dir: tmp)
 
       assert Bastille.exists?("ghost")
+    end
+
+    test "returns false on a bare mountpoint stub (bastille destroy leftover)" do
+      # Bastille's ZFS-backed jails leave an empty <name>/ behind after
+      # destroy: dataset is gone, mountpoint directory remains. The
+      # canonical liveness marker is jail.conf, not the directory.
+      tmp = Path.join(System.tmp_dir!(), "zed-bastille-test-#{:erlang.unique_integer([:positive])}")
+      stub = Path.join(tmp, "stub")
+      File.mkdir_p!(stub)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+
+      Application.put_env(:zed, Zed.Platform.Bastille, runner: Mock, jails_dir: tmp)
+
+      refute Bastille.exists?("stub")
     end
 
     test "rejects invalid names without touching the filesystem" do

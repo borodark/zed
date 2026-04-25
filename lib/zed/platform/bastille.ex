@@ -86,14 +86,21 @@ defmodule Zed.Platform.Bastille do
 
   @doc """
   Filesystem-based existence check. Returns `true` if
-  `<jails_dir>/<name>/` exists, `false` otherwise. Does not invoke
-  the runner — the directory is the canonical Bastille marker
-  regardless of jail running state.
+  `<jails_dir>/<name>/jail.conf` exists as a regular file.
+
+  We check `jail.conf`, not just the bare directory: Bastille's
+  ZFS-backed jails leave an empty mountpoint directory behind after
+  `bastille destroy`. The dataset is gone, the directory is a stub.
+  `File.dir?` would falsely report the jail still exists.
+  `jail.conf` is bastille's per-jail config — written on create,
+  removed on destroy — and is the canonical liveness marker.
+
+  Does not invoke the runner.
   """
   @spec exists?(name :: binary()) :: boolean()
   def exists?(name) when is_binary(name) do
     case validate_name(name) do
-      :ok -> File.dir?(Path.join(jails_dir(), name))
+      :ok -> File.regular?(Path.join([jails_dir(), name, "jail.conf"]))
       _ -> false
     end
   end
