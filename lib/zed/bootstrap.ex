@@ -120,6 +120,201 @@ defmodule Zed.Bootstrap do
   end
 
   @doc """
+  Rotate a single slot: generate fresh material, archive the old
+  value(s), stamp a new fingerprint, bump the rotation counter, and
+  return a restart plan for the consumers.
+
+  Options (optional):
+    - `:mountpoint` — where the slot files live; required if not
+      derivable from the stamped `secret.<slot>.path` property.
+    - `:plaintext` — only honoured for `:admin_passwd`. Skip the
+      auto-generated passphrase and hash this value instead.
+    - `:archive_dir` — override `<mountpoint>/_archive`.
+
+  Returns
+  -------
+
+      {:ok, %{
+        slot: slot,
+        prev_fingerprint: "sha256:...",   # what was stamped before
+        new_fingerprint:  "sha256:...",   # what's stamped now
+        archive_path:     "<.../slot-<ts>/>",
+        rotation_count:   N + 1,
+        snapshot_pre:     "<base>/zed@rotate-pre-<slot>-<ts>",
+        snapshot_post:    "<base>/zed@rotate-post-<slot>-<ts>",
+        restart_plan:     [:beam, :zed_web, ...],   # from Catalog
+        banner:           [...]   # plaintext-once entries (admin_passwd)
+      }}
+
+  Errors
+  ------
+
+      {:error, :unknown_slot}            # slot not in Catalog
+      {:error, :slot_not_generated}      # nothing to rotate yet
+      {:error, {:archive_failed, ...}}
+      {:error, {:snapshot_failed, ...}}
+      {:error, {:generate_failed, ...}}
+
+  Idempotency: rotation is *not* idempotent — every call generates a
+  new value and creates a fresh archive directory. Re-running on the
+  same second (sub-second collisions) raises `:archive_already_exists`
+  rather than overwriting an archive.
+  """
+  @spec rotate(binary, atom, keyword) :: {:ok, map} | {:error, term}
+  def rotate(base, slot, opts \\ []) when is_binary(base) and is_atom(slot) do
+    cond do
+      not Catalog.slot_known?(slot) ->
+        {:error, :unknown_slot}
+
+      true ->
+        do_rotate(base, slot, opts)
+    end
+  end
+
+  defp do_rotate(base, slot, opts) do
+    props = Property.get_all("#{base}/zed")
+    fp_key = "secret.#{slot}.fingerprint"
+    path_key = "secret.#{slot}.path"
+    rc_key = "secret.#{slot}.rotation_count"
+
+    with {:ok, prev_fp} <- fetch(props, fp_key, :slot_not_generated),
+         {:ok, slot_path} <- fetch(props, path_key, :slot_path_unset),
+         mountpoint = mountpoint_from(slot_path, opts),
+         archive_dir = Keyword.get(opts, :archive_dir, Path.join(mountpoint, "_archive")),
+         ts = timestamp(),
+         archive_path = Path.join(archive_dir, "#{slot}-#{ts}"),
+         {:ok, snap_pre} <- snapshot(base, "rotate-pre-#{slot}-#{ts}"),
+         :ok <- archive_slot_files(slot, slot_path, archive_path),
+         {:ok, generated} <- regenerate_in_place(slot, slot_path, base, opts),
+         {:ok, snap_post} <- snapshot(base, "rotate-post-#{slot}-#{ts}") do
+      prior_count = String.to_integer(Map.get(props, rc_key, "0"))
+      new_count = prior_count + 1
+
+      :ok = stamp_rotation(base, slot, generated.fingerprint, prev_fp, new_count)
+
+      {:ok,
+       %{
+         slot: slot,
+         prev_fingerprint: prev_fp,
+         new_fingerprint: generated.fingerprint,
+         archive_path: archive_path,
+         rotation_count: new_count,
+         snapshot_pre: snap_pre,
+         snapshot_post: snap_post,
+         restart_plan: Catalog.consumers(slot),
+         banner: [generated.banner] |> Enum.reject(&banner_quiet?/1)
+       }}
+    end
+  end
+
+  defp fetch(map, key, error) do
+    case Map.get(map, key) do
+      nil -> {:error, error}
+      v -> {:ok, v}
+    end
+  end
+
+  # The mountpoint is the dirname of the stored slot path. Tests can
+  # override via opts when the path was set elsewhere.
+  defp mountpoint_from(slot_path, opts) do
+    Keyword.get(opts, :mountpoint, Path.dirname(slot_path))
+  end
+
+  # Archive every file the slot owns. Single-value slots have one
+  # file at the slot path; keypair / cert slots have suffixed siblings.
+  # Each file moves into the archive dir under its original basename so
+  # `cat <archive>/ssh_host_ed25519` reads the prior key intact.
+  defp archive_slot_files(slot, slot_path, archive_path) do
+    if File.exists?(archive_path) do
+      {:error, {:archive_already_exists, archive_path}}
+    else
+      :ok = File.mkdir_p!(archive_path) |> wrap_ok()
+
+      slot
+      |> related_files(slot_path)
+      |> Enum.each(fn src ->
+        if File.regular?(src) do
+          dst = Path.join(archive_path, Path.basename(src))
+          :ok = File.cp!(src, dst) |> wrap_ok()
+          File.chmod(dst, 0o400)
+        end
+      end)
+
+      :ok
+    end
+  rescue
+    e -> {:error, {:archive_failed, Exception.message(e)}}
+  end
+
+  # File.mkdir_p!/cp! return :ok or raise; this collapses the no-op
+  # return into an explicit :ok so the caller can pattern-match.
+  defp wrap_ok(:ok), do: :ok
+  defp wrap_ok(_), do: :ok
+
+  defp related_files(slot, base_path) do
+    case Catalog.fields(slot) do
+      [:value] -> [base_path]
+      [:priv, :pub] -> [base_path, base_path <> ".pub"]
+      [:cert, :key] -> [base_path <> ".cert", base_path <> ".key"]
+      _ -> [base_path]
+    end
+  end
+
+  defp regenerate_in_place(slot, slot_path, _base, opts) do
+    algo = Catalog.algo(slot)
+
+    gen_opts =
+      if slot == :admin_passwd and Keyword.has_key?(opts, :plaintext) do
+        [plaintext: Keyword.fetch!(opts, :plaintext)]
+      else
+        []
+      end
+
+    with {:ok, material} <- Generate.by_algo(algo, gen_opts) do
+      {fingerprint, banner} = store_material(slot, material, slot_path)
+
+      {:ok,
+       %{
+         slot: slot,
+         algo: algo,
+         fingerprint: fingerprint,
+         path: slot_path,
+         banner: banner
+       }}
+    else
+      {:error, reason} -> {:error, {:generate_failed, slot, reason}}
+    end
+  end
+
+  defp stamp_rotation(base, slot, new_fp, prev_fp, new_count) do
+    now = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    Property.set_many("#{base}/zed", %{
+      "secret.#{slot}.fingerprint" => new_fp,
+      "secret.#{slot}.prev_fingerprint" => prev_fp,
+      "secret.#{slot}.rotation_count" => Integer.to_string(new_count),
+      "secret.#{slot}.last_rotated_at" => now
+    })
+
+    :ok
+  end
+
+  defp banner_quiet?({:beam_cookie, :value_stored_quietly}), do: true
+  defp banner_quiet?(_), do: false
+
+  # Microsecond resolution. Second-only timestamps collided when two
+  # rotate/3 calls landed in the same wall-clock second (caught on
+  # free-macpro-gpu running rotation_count loop). Microseconds give
+  # 6 extra digits — collision requires two calls within 1 µs, which
+  # is below the cost of a single ZFS snapshot.
+  defp timestamp do
+    now = DateTime.utc_now()
+    base = Calendar.strftime(now, "%Y%m%dT%H%M%S")
+    micros = elem(now.microsecond, 0) |> Integer.to_string() |> String.pad_leading(6, "0")
+    base <> micros
+  end
+
+  @doc """
   Recompute fingerprints, detect drift.
 
   Returns a list of `%{slot:, status:, ...}` maps. Status values:
@@ -431,7 +626,11 @@ defmodule Zed.Bootstrap do
 
   defp snapshot(base) do
     ts = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%S")
-    snap = "#{base}/zed@bootstrap-#{ts}"
+    snapshot(base, "bootstrap-#{ts}")
+  end
+
+  defp snapshot(base, label) when is_binary(label) do
+    snap = "#{base}/zed@#{label}"
 
     case ZFS.cmd(["snapshot", "-r", snap]) do
       {:ok, _} -> {:ok, snap}
