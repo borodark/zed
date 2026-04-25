@@ -85,31 +85,48 @@ defmodule Zed.Platform.Bastille do
   end
 
   @doc """
-  Filesystem-based existence check. Returns `true` iff
-  `<jails_dir>/<name>/` exists AND contains at least one entry.
+  Returns `true` iff `bastille list` includes a row whose Name
+  column equals `name`.
 
-  Empty-but-existing directory means bastille has destroyed the
-  jail but left the empty mountpoint stub behind (the ZFS-backed
-  jail dataset is gone, but the parent dataset's mount point
-  persists as an empty dir). `File.dir?` alone reports true on
-  these stubs and would falsely claim the jail exists. Checking
-  for any directory contents is the cheapest and most
-  bastille-version-agnostic liveness marker we have without
-  invoking the bastille CLI.
+  We tried two filesystem-only strategies first; both failed:
+    1. `File.dir?(<jails_dir>/<name>)` — false-positive on the
+       empty mountpoint stub bastille leaves after destroy.
+    2. Directory-non-empty check — false-negative when the BEAM
+       runs as a non-root user that can't read the root-owned
+       jail directory (`File.ls` returns `:eacces`).
 
-  Does not invoke the runner.
+  Authoritative answer comes from bastille itself: invoke
+  `bastille list` (via the runner, which prepends doas / sudo as
+  configured) and look for the name in the second column. This
+  works regardless of jail-state, ZFS-vs-UFS backend, or bastille
+  version.
   """
   @spec exists?(name :: binary()) :: boolean()
   def exists?(name) when is_binary(name) do
     case validate_name(name) do
-      :ok -> non_empty_dir?(Path.join(jails_dir(), name))
-      _ -> false
+      :ok ->
+        case runner().run(:list, [], []) do
+          {output, 0} -> name_in_list?(output, name)
+          _ -> false
+        end
+
+      _ ->
+        false
     end
   end
 
-  defp non_empty_dir?(path) do
-    case File.ls(path) do
-      {:ok, [_ | _]} -> true
+  defp name_in_list?(output, name) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.any?(&list_row_matches?(&1, name))
+  end
+
+  defp list_row_matches?(line, name) do
+    # bastille list output (default columns):
+    #   JID  Name        Boot  Prio  State  Type  IP Address  Published Ports  Release  Tags
+    # Name is column 2 (index 1).
+    case String.split(line) do
+      [_jid, ^name | _rest] -> true
       _ -> false
     end
   end
