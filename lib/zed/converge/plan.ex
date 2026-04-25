@@ -96,6 +96,9 @@ defmodule Zed.Converge.Plan do
       build_jail_install_step(jail_id, config, mountpoint),
       build_jail_create_step(jail_id, config, ds)
     ]
+    |> Kernel.++(build_jail_pkg_steps(jail_id, config))
+    |> Kernel.++(build_jail_mount_steps(jail_id, config))
+    |> Kernel.++(build_jail_svc_steps(jail_id, config))
   end
 
   defp expand_to_steps(_, _pool), do: []
@@ -180,6 +183,59 @@ defmodule Zed.Converge.Plan do
     }
   end
 
+  # --- Step Builders: Jail sub-steps ---
+
+  defp build_jail_pkg_steps(jail_id, %{packages: pkgs}) when is_list(pkgs) and pkgs != [] do
+    [
+      %Step{
+        id: "jail:pkg:#{jail_id}",
+        type: :jail_pkg,
+        action: :install,
+        args: %{jail: jail_id, packages: pkgs},
+        deps: ["jail:create:#{jail_id}"]
+      }
+    ]
+  end
+
+  defp build_jail_pkg_steps(_jail_id, _config), do: []
+
+  defp build_jail_mount_steps(jail_id, %{mounts: mounts}) when is_list(mounts) and mounts != [] do
+    mounts
+    |> Enum.with_index()
+    |> Enum.map(fn {{path, opts}, idx} ->
+      %Step{
+        id: "jail:mount:#{jail_id}:#{idx}",
+        type: :jail_mount,
+        action: :create,
+        args: %{jail: jail_id, host_path: path, jail_path: opts[:into], mode: opts[:mode]},
+        deps: ["jail:create:#{jail_id}"]
+      }
+    end)
+  end
+
+  defp build_jail_mount_steps(_jail_id, _config), do: []
+
+  defp build_jail_svc_steps(jail_id, %{services: svcs}) when is_list(svcs) and svcs != [] do
+    # Services depend on packages (if any) being installed first
+    pkg_dep =
+      case svcs do
+        _ -> ["jail:create:#{jail_id}"]
+      end
+
+    svcs
+    |> Enum.map(fn {name, opts} ->
+      %Step{
+        id: "jail:svc:#{jail_id}:#{name}",
+        type: :jail_svc,
+        action: :start,
+        args: %{jail: jail_id, service: name, env: opts[:env]},
+        deps: pkg_dep
+      }
+    end)
+  end
+
+  defp build_jail_svc_steps(_jail_id, _config), do: []
+
   # --- Helpers ---
 
   defp build_pool_path(nil, id), do: id
@@ -197,8 +253,8 @@ defmodule Zed.Converge.Plan do
   defp sort_by_type(steps) do
     steps
     |> Enum.sort_by(fn step ->
-      type_priority = %{dataset: 0, snapshot: 1, jail: 2, app: 3, service: 4}
-      action_priority = %{install: 0, create: 1, restart: 2}
+      type_priority = %{dataset: 0, snapshot: 1, jail: 2, jail_pkg: 3, jail_mount: 4, app: 5, jail_svc: 6, service: 7}
+      action_priority = %{install: 0, create: 1, start: 2, restart: 3}
 
       {
         Map.get(type_priority, step.type, 99),

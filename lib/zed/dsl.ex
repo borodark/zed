@@ -84,7 +84,7 @@ defmodule Zed.DSL do
   end
 
   defmacro jail(name, do: block) do
-    config = parse_kv_block(block)
+    config = parse_jail_block(block)
 
     quote do
       @zed_jails {unquote(name), unquote(Macro.escape(config))}
@@ -126,6 +126,11 @@ defmodule Zed.DSL do
     deploy_name = Module.get_attribute(env.module, :zed_deploy_name)
     pool = Module.get_attribute(env.module, :zed_pool)
     snapshot_config = Module.get_attribute(env.module, :zed_snapshot_config)
+
+    # Desugar inline apps: jail config with :app key becomes a top-level
+    # app + contains reference on the jail.
+    {jails, inline_apps} = extract_inline_apps(jails)
+    apps = apps ++ inline_apps
 
     ir = build_ir(deploy_name, pool, datasets, apps, jails, zones, clusters, snapshot_config)
 
@@ -190,6 +195,10 @@ defmodule Zed.DSL do
     args |> Enum.map(&normalize_value/1) |> List.to_tuple()
   end
 
+  defp normalize_value({:%{}, _, args}) when is_list(args) do
+    Map.new(args, fn {k, v} -> {normalize_value(k), normalize_value(v)} end)
+  end
+
   defp normalize_value(other), do: other
 
   # Parse app block — like kv but accumulates :health entries.
@@ -212,10 +221,73 @@ defmodule Zed.DSL do
 
   defp parse_app_statement(_, acc), do: acc
 
+  # Parse jail block — handles nested app, service, nullfs_mount, and
+  # two-arg dataset forms. Simple key-value falls through to parse_kv_statement.
+  defp parse_jail_block({:__block__, _, statements}) do
+    Enum.reduce(statements, %{services: [], mounts: []}, &parse_jail_statement/2)
+  end
+
+  defp parse_jail_block(single) do
+    parse_jail_statement(single, %{services: [], mounts: []})
+  end
+
+  # app :name do ... end — inline app nested inside jail
+  defp parse_jail_statement({:app, _, [name, [do: inner_block]]}, acc) do
+    app_config = parse_app_block(inner_block)
+    Map.put(acc, :app, {name, app_config})
+  end
+
+  # service :name, opts  OR  service :name (no opts)
+  defp parse_jail_statement({:service, _, [name | opts]}, acc) do
+    svc = {name, opts_to_map(opts)}
+    Map.update!(acc, :services, fn svcs -> svcs ++ [svc] end)
+  end
+
+  # nullfs_mount path, into: target, mode: :ro
+  defp parse_jail_statement({:nullfs_mount, _, [path | opts]}, acc) do
+    mount = {path, opts_to_map(opts)}
+    Map.update!(acc, :mounts, fn ms -> ms ++ [mount] end)
+  end
+
+  # dataset "data/pg", mount_in_jail: "/var/db/postgres" — two-arg form
+  defp parse_jail_statement({:dataset, _, [path | opts]}, acc) when opts != [] do
+    ds = {path, opts_to_map(opts)}
+    Map.update(acc, :datasets, [ds], fn dss -> dss ++ [ds] end)
+  end
+
+  # Everything else: regular key-value (packages, release, depends_on, ip4, etc.)
+  defp parse_jail_statement(other, acc) do
+    parse_kv_statement(other, acc)
+  end
+
   defp opts_to_map([]), do: %{}
-  defp opts_to_map([opts]) when is_list(opts), do: Map.new(opts)
-  defp opts_to_map(opts) when is_list(opts), do: Map.new(opts)
+  defp opts_to_map([opts]) when is_list(opts), do: Map.new(opts, &normalize_opt/1)
+  defp opts_to_map(opts) when is_list(opts), do: Map.new(opts, &normalize_opt/1)
   defp opts_to_map(_), do: %{}
+
+  defp normalize_opt({k, v}), do: {k, normalize_value(v)}
+
+  # --- Private: Inline App Desugaring ---
+
+  # Jails with an inline `app :name do...end` desugar into a top-level
+  # app + `contains` on the jail. The app inherits the jail's dataset
+  # if not explicitly set.
+  defp extract_inline_apps(jails) do
+    {updated_jails, extra_apps} =
+      Enum.reduce(jails, {[], []}, fn {jail_name, config}, {js, as} ->
+        case Map.pop(config, :app) do
+          {nil, config} ->
+            {[{jail_name, config} | js], as}
+
+          {{app_name, app_config}, config} ->
+            config = Map.put(config, :contains, app_name)
+            app_config = Map.put_new(app_config, :dataset, config[:dataset])
+            {[{jail_name, config} | js], [{app_name, app_config} | as]}
+        end
+      end)
+
+    {Enum.reverse(updated_jails), Enum.reverse(extra_apps)}
+  end
 
   # --- Private: IR Construction ---
 

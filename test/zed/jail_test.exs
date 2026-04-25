@@ -110,6 +110,116 @@ defmodule Zed.JailTest do
       assert install_step.deps == ["dataset:create:jails/api"]
     end
 
+    test "jail with packages produces pkg step" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :pg,
+            type: :jail,
+            config: %{
+              dataset: "jails/pg",
+              ip4: "10.17.89.20/24",
+              packages: ["postgresql16-server"]
+            }
+          },
+          action: :create,
+          changes: [{:jail, nil, "pg"}]
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "tank")
+
+      pkg_step = Enum.find(plan.steps, &(&1.type == :jail_pkg))
+      assert pkg_step != nil
+      assert pkg_step.action == :install
+      assert pkg_step.args.packages == ["postgresql16-server"]
+      assert pkg_step.deps == ["jail:create:pg"]
+    end
+
+    test "jail with services produces svc steps" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :pg,
+            type: :jail,
+            config: %{
+              dataset: "jails/pg",
+              ip4: "10.17.89.20/24",
+              services: [{:postgresql, %{env: %{"PGDATA" => "/var/db/postgres"}}}]
+            }
+          },
+          action: :create,
+          changes: [{:jail, nil, "pg"}]
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "tank")
+
+      svc_step = Enum.find(plan.steps, &(&1.type == :jail_svc))
+      assert svc_step != nil
+      assert svc_step.action == :start
+      assert svc_step.args.service == :postgresql
+    end
+
+    test "jail with mounts produces mount steps" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :zedweb,
+            type: :jail,
+            config: %{
+              dataset: "jails/zedweb",
+              ip4: "10.17.89.10/24",
+              mounts: [{"/var/run/zed", %{into: "/host_run_zed", mode: :ro}}]
+            }
+          },
+          action: :create,
+          changes: [{:jail, nil, "zedweb"}]
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "tank")
+
+      mount_step = Enum.find(plan.steps, &(&1.type == :jail_mount))
+      assert mount_step != nil
+      assert mount_step.action == :create
+      assert mount_step.args.host_path == "/var/run/zed"
+      assert mount_step.args.jail_path == "/host_run_zed"
+      assert mount_step.args.mode == :ro
+    end
+
+    test "jail sub-steps sorted: jail < jail_pkg < jail_mount < jail_svc" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :pg,
+            type: :jail,
+            config: %{
+              dataset: "jails/pg",
+              ip4: "10.17.89.20/24",
+              packages: ["postgresql16-server"],
+              services: [{:postgresql, %{}}],
+              mounts: [{"/data", %{into: "/mnt/data"}}]
+            }
+          },
+          action: :create,
+          changes: [{:jail, nil, "pg"}]
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "tank")
+      types = Enum.map(plan.steps, & &1.type)
+
+      jail_idx = Enum.find_index(types, &(&1 == :jail))
+      pkg_idx = Enum.find_index(types, &(&1 == :jail_pkg))
+      mount_idx = Enum.find_index(types, &(&1 == :jail_mount))
+      svc_idx = Enum.find_index(types, &(&1 == :jail_svc))
+
+      assert jail_idx < pkg_idx, "jail before jail_pkg"
+      assert pkg_idx < mount_idx, "jail_pkg before jail_mount"
+      assert mount_idx < svc_idx, "jail_mount before jail_svc"
+    end
+
     test "jail steps sorted after datasets, before apps" do
       diff = [
         %Diff{
