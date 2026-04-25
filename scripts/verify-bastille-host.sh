@@ -132,6 +132,21 @@ case "$FWD" in
     *) bad "net.inet.ip.forwarding=$FWD — jails can't reach outside" ;;
 esac
 
+# pf is required for Bastille's rdr/NAT paths. Bastille itself runs
+# jails without it (shared-IP mode), but A5.2's port-forwarding work
+# and anything beyond a loopback address needs /dev/pf reachable.
+if kldstat -q -n pf.ko 2>/dev/null; then
+    ok "pf kernel module loaded"
+else
+    warn "pf kernel module not loaded — doas kldload pf; doas sysrc pf_load=YES"
+fi
+
+if [ -c /dev/pf ]; then
+    ok "/dev/pf present"
+else
+    warn "/dev/pf absent — bastille rdr/NAT will fail silently"
+fi
+
 # ----------------------------------------------------------------------
 hdr "bastille0 interface"
 
@@ -223,7 +238,10 @@ case "${1:-}" in
                 bad "start failed (see $LOG)"
             fi
 
-            if doas bastille destroy -f "$SANDBOX" >>"$LOG" 2>&1; then
+            # -a = auto-confirm, -f = force stop-before-destroy. Without -a,
+            # bastille still prints "Are you sure? [y|n]" and waits for
+            # stdin, which the script does not provide.
+            if doas bastille destroy -af "$SANDBOX" >>"$LOG" 2>&1; then
                 ok "destroy"
             else
                 bad "destroy failed (see $LOG) — manual cleanup may be required"
