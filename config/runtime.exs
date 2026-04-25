@@ -1,10 +1,28 @@
 import Config
 
-# Role dispatch (A5a.1) — `ZED_ROLE` selects which supervisor branch
-# `Zed.Application` starts at boot. `mix release` exports the role per
-# target; `mix test` and `iex -S mix` leave it unset so the default is
-# `:full` (all bits start; `zed serve` still drives the endpoint).
-case System.get_env("ZED_ROLE") do
+# Role dispatch (A5a.1 + A5a.7).
+#
+# Resolution order:
+#   1. Explicit ZED_ROLE env var wins (operator override).
+#   2. Otherwise, RELEASE_NAME implies the role:
+#        zedweb → :web
+#        zedops → :ops
+#      So `_build/prod/rel/zedweb/bin/zedweb start` boots in :web mode
+#      without the operator having to remember to set ZED_ROLE.
+#   3. Otherwise (mix test, iex -S mix, escript), unset → defaults to
+#      :full at runtime.
+#
+# A5a.7's `Zed.Role.assert_release_role!/0` enforces consistency: if
+# the release name and the resolved role disagree, the BEAM refuses
+# to boot.
+inferred_role =
+  case {System.get_env("ZED_ROLE"), System.get_env("RELEASE_NAME")} do
+    {nil, "zedweb"} -> "web"
+    {nil, "zedops"} -> "ops"
+    {explicit, _} -> explicit
+  end
+
+case inferred_role do
   nil -> :ok
   role when role in ["web", "ops", "full"] -> config :zed, :role, String.to_atom(role)
   other -> raise "ZED_ROLE=#{inspect(other)} not in [web, ops, full]"
