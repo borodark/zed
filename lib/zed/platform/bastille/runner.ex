@@ -57,7 +57,14 @@ defmodule Zed.Platform.Bastille.Runner.System do
       |> Enum.map(&shell_escape/1)
       |> Enum.join(" ")
 
-    cmd = "yes | #{sudo_prefix}#{bastille} destroy -f #{shell_escape(name)} #{extra}"
+    # Bastille 1.4 refuses to destroy a running jail without -a
+    # (auto-stop). Without it, destroy prints "Jail is running. Use
+    # [-a|--auto] to auto-stop the jail." and STILL EXITS 0 — silently
+    # leaving the jail running. `-f` alone is not enough. Pass `-a -f`
+    # so a running jail is stopped first regardless of caller's prior
+    # Bastille.stop/1. `yes |` answers the "Are you sure?" prompt that
+    # fires even with -a -f.
+    cmd = "yes | #{sudo_prefix}#{bastille} destroy -a -f #{shell_escape(name)} #{extra}"
     System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
   end
 
