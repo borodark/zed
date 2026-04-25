@@ -15,6 +15,8 @@ defmodule Zed.IR.Validate do
     check_jail_contains(ir)
     check_no_inline_secrets(ir)
     check_secret_refs(ir)
+    check_cluster_cookies(ir)
+    check_cluster_members(ir)
     ir
   end
 
@@ -131,6 +133,73 @@ defmodule Zed.IR.Validate do
     raise Zed.ValidationError,
           "app #{inspect(app_id)} #{inspect(config_key)}: secret field must be an atom, got #{inspect(field)}"
   end
+
+  # Cluster cookies follow the same hygiene rule as app cookies — no
+  # inline strings, no inline atoms. Same set of allowed shapes:
+  # {:env, "VAR"}, {:file, path}, {:secret, slot[, field[, opts]]}.
+  # The {:secret, ...} shape also gets the full Catalog walk via
+  # check_secret_refs_in_clusters/1.
+  defp check_cluster_cookies(%IR{} = ir) do
+    Enum.each(ir.clusters, fn cluster ->
+      cookie = cluster.config[:cookie]
+
+      case cookie do
+        nil -> :ok
+        {:env, _} -> :ok
+        {:file, _} -> :ok
+        {:secret, slot} -> validate_secret_ref!(slot, :value, [], cluster.id, :cookie)
+        {:secret, slot, field} -> validate_secret_ref!(slot, field, [], cluster.id, :cookie)
+        {:secret, slot, field, opts} when is_list(opts) ->
+          validate_secret_ref!(slot, field, opts, cluster.id, :cookie)
+        s when is_binary(s) ->
+          raise Zed.ValidationError,
+                "cluster #{inspect(cluster.id)} has an inline cookie string — use {:env, \"VAR\"}, {:file, path}, or {:secret, :slot} instead"
+        s when is_atom(s) ->
+          raise Zed.ValidationError,
+                "cluster #{inspect(cluster.id)} has an inline cookie atom — use {:env, \"VAR\"}, {:file, path}, or {:secret, :slot} instead"
+        _ -> :ok
+      end
+    end)
+  end
+
+  # Cluster `members` is a list of node atoms shaped `:"name@host"`.
+  # The host part is whatever — IP, dotted FQDN, mDNS, anything BEAM
+  # accepts. We only check the @ separator and that the node name half
+  # is non-empty, because the BEAM itself rejects malformed node names
+  # at start_distribution time and that's the right place for the deep
+  # check. Empty member list is allowed for now (cluster declared but
+  # not yet populated; populated by a later iteration's discovery).
+  defp check_cluster_members(%IR{} = ir) do
+    Enum.each(ir.clusters, fn cluster ->
+      members = cluster.config[:members] || []
+
+      cond do
+        not is_list(members) ->
+          raise Zed.ValidationError,
+                "cluster #{inspect(cluster.id)} :members must be a list, got #{inspect(members)}"
+
+        true ->
+          Enum.each(members, fn m ->
+            unless valid_node_atom?(m) do
+              raise Zed.ValidationError,
+                    "cluster #{inspect(cluster.id)} member #{inspect(m)} is not a valid node atom (expected :\"name@host\")"
+            end
+          end)
+      end
+    end)
+  end
+
+  defp valid_node_atom?(m) when is_atom(m) do
+    m
+    |> Atom.to_string()
+    |> String.split("@", parts: 2)
+    |> case do
+      [name, host] when name != "" and host != "" -> true
+      _ -> false
+    end
+  end
+
+  defp valid_node_atom?(_), do: false
 
   defp check_storage_mode!(mode, slot, app_id, config_key) do
     cond do
