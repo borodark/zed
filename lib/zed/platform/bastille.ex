@@ -171,7 +171,24 @@ defmodule Zed.Platform.Bastille do
   """
   def privilege_prefix, do: config(:privilege_prefix, nil)
 
-  defp runner, do: config(:runner, Runner.System)
+  # Runner selection: explicit config override wins (used by tests to
+  # inject Runner.Mock); otherwise the role decides. In `:web` the
+  # bastille shellout happens on the other side of the privilege
+  # boundary, so the runner sends the work to zedops via OpsClient.
+  # In `:ops` and `:full` the shellout is in-process via Runner.System.
+  defp runner do
+    case :zed |> Application.get_env(__MODULE__, []) |> Keyword.get(:runner) do
+      nil -> default_runner_for_role()
+      explicit -> explicit
+    end
+  end
+
+  defp default_runner_for_role do
+    case Zed.Role.current() do
+      :web -> Runner.OpsClient
+      _ -> Runner.System
+    end
+  end
 
   defp config(key, default) do
     :zed
