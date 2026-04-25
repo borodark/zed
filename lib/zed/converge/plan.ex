@@ -2,8 +2,15 @@ defmodule Zed.Converge.Plan do
   @moduledoc """
   Build an ordered execution plan from a diff.
 
-  Steps are topologically sorted: datasets before apps,
-  apps before services, snapshots before mutations.
+  Steps are topologically sorted by type priority:
+
+      dataset → snapshot → jail → jail_pkg → jail_mount → app → jail_svc → service
+
+  Within each type, actions sort: install → create → start → restart.
+
+  Jail diffs expand into up to five sub-steps: `jail:install` (write
+  jail.conf), `jail:create` (start jail), `jail:pkg` (install packages),
+  `jail:mount` (nullfs mounts), and `jail:svc` (start services).
   """
 
   alias Zed.Converge.{Diff, Step}

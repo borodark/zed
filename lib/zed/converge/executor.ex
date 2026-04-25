@@ -2,6 +2,11 @@ defmodule Zed.Converge.Executor do
   @moduledoc """
   Execute a convergence plan step by step.
 
+  Handles `:dataset`, `:app`, `:service`, and `:jail` step types with
+  real ZFS/platform operations. Jail sub-steps (`:jail_pkg`,
+  `:jail_mount`, `:jail_svc`) are currently stubs returning
+  `{:ok, :pending}` — real Bastille wiring lands in S6.
+
   If any step fails, returns immediately with the failure
   so the caller can trigger rollback.
   """

@@ -3,6 +3,18 @@ defmodule Zed.IR.Validate do
   Compile-time validation passes for the deployment IR.
   Catches broken references and invalid configurations before
   anything touches disk.
+
+  ## Checks
+
+    * `check_pool` — pool must be a non-nil string
+    * `check_dataset_refs` — apps reference only declared datasets
+    * `check_jail_contains` — jail `contains` references a declared app
+    * `check_jail_packages` — packages must be a list of binary strings
+    * `check_jail_depends_on` — depends_on entries reference declared jails
+    * `check_no_inline_secrets` — cookies must use {:env,_}, {:file,_}, or {:secret,_}
+    * `check_secret_refs` — secret slots and fields exist in Catalog
+    * `check_cluster_cookies` — same cookie hygiene as apps
+    * `check_cluster_members` — members are valid `:"name@host"` atoms
   """
 
   alias Zed.IR
