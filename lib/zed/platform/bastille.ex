@@ -111,6 +111,24 @@ defmodule Zed.Platform.Bastille do
   @doc "Default FreeBSD release for create/2, from app env."
   def default_release, do: config(:default_release, "15.0-RELEASE")
 
+  @doc """
+  Privilege-escalation command to prepend to `bastille` invocations.
+
+  Bastille refuses to run as a non-root user, exiting with
+  `Bastille: Permission Denied / root / sudo / doas required`. Set
+  this to `"doas"` (or `"sudo"`) on hosts where the zed BEAM
+  process runs as a non-root user. `nil` (the default) means call
+  bastille directly — appropriate when zed runs as root or when
+  `bastille` is invoked through some other escalation already.
+
+      config :zed, Zed.Platform.Bastille, privilege_prefix: "doas"
+
+  The :bastille_live integration test sets this to "doas" so the
+  test runner (typically the `io` user with a wheel-doas rule for
+  `cmd bastille`) can drive the round-trip without manual sudo.
+  """
+  def privilege_prefix, do: config(:privilege_prefix, nil)
+
   defp runner, do: config(:runner, Runner.System)
 
   defp config(key, default) do

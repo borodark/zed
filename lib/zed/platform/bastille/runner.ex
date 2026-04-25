@@ -50,20 +50,35 @@ defmodule Zed.Platform.Bastille.Runner.System do
   @impl true
   def run(:destroy, [name | rest], _opts) do
     bastille = Zed.Platform.Bastille.binary()
+    sudo_prefix = privilege_prefix_string()
 
     extra =
       rest
       |> Enum.map(&shell_escape/1)
       |> Enum.join(" ")
 
-    cmd = "yes | #{bastille} destroy -f #{shell_escape(name)} #{extra}"
+    cmd = "yes | #{sudo_prefix}#{bastille} destroy -f #{shell_escape(name)} #{extra}"
     System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
   end
 
   def run(subcommand, argv, _opts) do
     bastille = Zed.Platform.Bastille.binary()
     full_args = [Atom.to_string(subcommand) | argv]
-    System.cmd(bastille, full_args, stderr_to_stdout: true)
+
+    case Zed.Platform.Bastille.privilege_prefix() do
+      nil ->
+        System.cmd(bastille, full_args, stderr_to_stdout: true)
+
+      esc when is_binary(esc) ->
+        System.cmd(esc, [bastille | full_args], stderr_to_stdout: true)
+    end
+  end
+
+  defp privilege_prefix_string do
+    case Zed.Platform.Bastille.privilege_prefix() do
+      nil -> ""
+      esc when is_binary(esc) -> esc <> " "
+    end
   end
 
   # Conservative shell-escape: assume the input is alphanumeric +
