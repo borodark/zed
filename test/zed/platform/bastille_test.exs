@@ -115,45 +115,50 @@ defmodule Zed.Platform.BastilleTest do
   end
 
   describe "exists?/1" do
-    test "returns false for non-existent name" do
-      Application.put_env(:zed, Zed.Platform.Bastille,
-        runner: Mock,
-        jails_dir: "/tmp/zed-bastille-test-#{:erlang.unique_integer([:positive])}"
-      )
-
-      refute Bastille.exists?("ghost")
-    end
-
-    test "returns true when <jails_dir>/<name>/ has any contents" do
-      tmp = Path.join(System.tmp_dir!(), "zed-bastille-test-#{:erlang.unique_integer([:positive])}")
-      jail = Path.join(tmp, "ghost")
-      File.mkdir_p!(jail)
-      # Any file or sub-dir counts; bastille create leaves several
-      # (root/, fstab, configs) but the layout varies by version.
-      File.touch!(Path.join(jail, "fstab"))
-      on_exit(fn -> File.rm_rf!(tmp) end)
-
-      Application.put_env(:zed, Zed.Platform.Bastille, runner: Mock, jails_dir: tmp)
+    test "returns true when bastille list includes the name in column 2" do
+      Mock.expect(:list, {
+        " JID  Name     Boot  Prio  State    Type   IP Address  Published Ports  Release          Tags\n" <>
+          "  3   ghost   on    0     Up       thin   10.0.0.5    -                15.0-RELEASE     -\n",
+        0
+      })
 
       assert Bastille.exists?("ghost")
     end
 
-    test "returns false on a bare mountpoint stub (bastille destroy leftover)" do
-      # Bastille's ZFS-backed jails leave an empty <name>/ behind after
-      # destroy: dataset is gone, mountpoint directory remains as a
-      # stub. exists?/1 must distinguish empty stubs from real jails.
-      tmp = Path.join(System.tmp_dir!(), "zed-bastille-test-#{:erlang.unique_integer([:positive])}")
-      stub = Path.join(tmp, "stub")
-      File.mkdir_p!(stub)
-      on_exit(fn -> File.rm_rf!(tmp) end)
+    test "returns false when bastille list does not include the name" do
+      Mock.expect(:list, {
+        " JID  Name     Boot  Prio  State    Type   IP Address  Published Ports  Release          Tags\n" <>
+          "  3   other   on    0     Up       thin   10.0.0.5    -                15.0-RELEASE     -\n",
+        0
+      })
 
-      Application.put_env(:zed, Zed.Platform.Bastille, runner: Mock, jails_dir: tmp)
-
-      refute Bastille.exists?("stub")
+      refute Bastille.exists?("ghost")
     end
 
-    test "rejects invalid names without touching the filesystem" do
+    test "returns false on empty list output" do
+      Mock.expect(:list, {" JID  Name  Boot  Prio  State  Type  IP Address  Published Ports  Release  Tags\n", 0})
+      refute Bastille.exists?("ghost")
+    end
+
+    test "returns false when bastille list itself errors" do
+      Mock.expect(:list, {"bastille: error\n", 1})
+      refute Bastille.exists?("ghost")
+    end
+
+    test "name-prefix is not enough — must be an exact column match" do
+      # 'ghost-test' must not match 'ghost'.
+      Mock.expect(:list, {
+        " JID  Name         Boot  Prio  State  Type   IP Address  Published Ports  Release  Tags\n" <>
+          "  3   ghost-test  on    0     Up     thin   10.0.0.5    -                15.0-RELEASE  -\n",
+        0
+      })
+
+      refute Bastille.exists?("ghost")
+    end
+
+    test "rejects invalid names without invoking the runner" do
       refute Bastille.exists?("../etc/passwd")
+      assert Mock.calls() == []
     end
   end
 
