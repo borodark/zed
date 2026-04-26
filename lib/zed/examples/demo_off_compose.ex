@@ -18,7 +18,7 @@ defmodule Zed.Examples.DemoOffCompose do
 
   use Zed.DSL
 
-  deploy :demo, pool: "zroot_mac" do
+  deploy :demo, pool: "mac_zroot" do
     # ----------------------------------------------------------------
     # Datasets — one per jail root, plus one per stateful jail's data
     # volume. Replaces docker-compose's named volumes.
