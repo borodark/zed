@@ -20,7 +20,7 @@ RELEASE="15.0-RELEASE"
 PG_DATA="/var/db/postgres/16/data"
 
 echo "==> Creating jail: ${JAIL}"
-if bastille list | grep -q "^${JAIL}\$"; then
+if bastille list 2>/dev/null | awk '{print $2}' | grep -qx "${JAIL}"; then
     echo "    jail ${JAIL} already exists, skipping create"
 else
     bastille create "${JAIL}" "${RELEASE}" "${IP}"
