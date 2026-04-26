@@ -35,6 +35,10 @@ bastille start "${JAIL}" || true
 echo "==> Installing clickhouse"
 bastille pkg "${JAIL}" install -y clickhouse
 
+echo "==> Activating base config from pkg samples"
+bastille cmd "${JAIL}" cp "${CH_CONFIG_DST}/config.xml.sample" "${CH_CONFIG_DST}/config.xml" 2>/dev/null || true
+bastille cmd "${JAIL}" cp "${CH_CONFIG_DST}/users.xml.sample" "${CH_CONFIG_DST}/users.xml" 2>/dev/null || true
+
 echo "==> Deploying Plausible ClickHouse config overrides"
 # Ensure config directories exist inside the jail
 bastille cmd "${JAIL}" mkdir -p "${CH_CONFIG_DST}/config.d"
@@ -54,7 +58,7 @@ echo "==> Enabling clickhouse service"
 sysrc -j "${JAIL}" clickhouse_enable=YES
 
 echo "==> Starting clickhouse"
-bastille service "${JAIL}" clickhouse start
+bastille service "${JAIL}" clickhouse start || bastille service "${JAIL}" clickhouse status || true
 
 echo "==> Waiting for ClickHouse to accept connections"
 RETRIES=10
