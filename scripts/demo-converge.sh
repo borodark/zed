@@ -1,0 +1,285 @@
+#!/bin/sh
+# scripts/demo-converge.sh — orchestrate the off-docker-compose demo
+# end-to-end on a single FreeBSD Mac Pro (mac-248 host).
+#
+# Splits the work cleanly:
+#   - Zed converge writes ZFS state + cluster artifact + secrets metadata
+#   - This script does bastille create/start, release staging, services
+#
+# Idempotent where possible. Re-running is safe: existing jails are
+# noticed and skipped; existing release dirs are overwritten; the
+# cluster artifact is rewritten every converge.
+#
+# Pre-conditions (validated in PHASE 0):
+#   - Running as root (via doas)
+#   - On FreeBSD 15.0
+#   - Pool `zroot_mac` exists
+#   - Bastille installed; 15.0-RELEASE bootstrapped
+#   - bastille0 cloned interface up
+#   - Five release dirs staged under ~io/zed/demo-releases/
+#   - User `io` exists (release dirs are owned by io)
+#
+# Usage:
+#   doas sh ~/zed/scripts/demo-converge.sh           # full run
+#   doas sh ~/zed/scripts/demo-converge.sh --dry-run # plan only, no changes
+
+set -eu
+
+# ----------------------------------------------------------------------
+# Configuration
+
+POOL="${POOL:-zroot_mac}"
+RELEASES_DIR="${RELEASES_DIR:-/home/io/zed/demo-releases}"
+ZED_REPO="${ZED_REPO:-/home/io/zed}"
+BASE_MOUNTPOINT="/var/db/zed"
+BASTILLE_JAILS="/usr/local/bastille/jails"
+RELEASE="15.0-RELEASE"
+
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+# Five BEAM jails: <name> <ip> <release-name>
+# release-name is the directory under RELEASES_DIR/ AND the binary
+# name inside <release>/bin/<name>.
+BEAM_JAILS="
+zedweb    10.17.89.10  zedweb
+craftplan 10.17.89.11  craftplan
+plausible 10.17.89.12  plausible
+livebook  10.17.89.13  livebook
+exmc      10.17.89.14  exmc
+"
+
+# Two DB jails — bootstrapped by mac-248's existing scripts
+DB_JAILS="
+pg  10.17.89.20
+ch  10.17.89.21
+"
+
+# ----------------------------------------------------------------------
+# Pretty-printing
+
+if [ -t 1 ]; then
+    GREEN=$(tput setaf 2 2>/dev/null || printf '')
+    RED=$(tput setaf 1 2>/dev/null || printf '')
+    YELLOW=$(tput setaf 3 2>/dev/null || printf '')
+    BOLD=$(tput bold 2>/dev/null || printf '')
+    RESET=$(tput sgr0 2>/dev/null || printf '')
+else
+    GREEN=""; RED=""; YELLOW=""; BOLD=""; RESET=""
+fi
+
+phase() { printf '\n%s== %s ==%s\n' "$BOLD" "$1" "$RESET"; }
+ok()    { printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$1"; }
+warn()  { printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$1"; }
+bad()   { printf '  %s✗%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
+note()  { printf '  · %s\n' "$1"; }
+
+run() {
+    if [ "$DRY_RUN" = "1" ]; then
+        printf '  [dry] %s\n' "$*"
+    else
+        eval "$@"
+    fi
+}
+
+# ----------------------------------------------------------------------
+phase "PHASE 0: pre-flight"
+
+[ "$(id -u)" = "0" ] || bad "must run as root (use doas)"
+[ "$(uname -s)" = "FreeBSD" ] || bad "must run on FreeBSD; got $(uname -s)"
+
+zpool list -H -o name "$POOL" >/dev/null 2>&1 \
+    || bad "pool $POOL not found; check POOL env var"
+ok "pool $POOL"
+
+command -v bastille >/dev/null 2>&1 || bad "bastille not installed"
+ok "bastille installed: $(pkg info -E bastille 2>/dev/null | head -1)"
+
+[ -d "/usr/local/bastille/releases/$RELEASE" ] \
+    || bad "bastille release $RELEASE not bootstrapped — run: bastille bootstrap $RELEASE update"
+ok "$RELEASE bootstrapped"
+
+ifconfig bastille0 >/dev/null 2>&1 || bad "bastille0 missing — run scripts/host-bring-up.sh first"
+ok "bastille0 interface up"
+
+[ -d "$RELEASES_DIR" ] || bad "releases dir not found: $RELEASES_DIR"
+for app in zedweb craftplan plausible livebook exmc; do
+    [ -x "$RELEASES_DIR/$app/bin/$app" ] \
+        || bad "missing release: $RELEASES_DIR/$app/bin/$app"
+done
+ok "all 5 release dirs present at $RELEASES_DIR"
+
+# ----------------------------------------------------------------------
+phase "PHASE 1: zed bootstrap (secrets + cluster cookie)"
+
+ZED_BASE="$POOL"
+
+if zfs list -H -o name "${ZED_BASE}/zed" >/dev/null 2>&1; then
+    ok "${ZED_BASE}/zed already exists; skipping bootstrap init"
+else
+    note "generating bootstrap passphrase + secrets"
+    PASSPHRASE=$(openssl rand -base64 32 | tr -d '\n')
+    printf '  bootstrap passphrase (RECORD THIS — needed for future unlocks):\n'
+    printf '  %s\n\n' "$PASSPHRASE"
+
+    cd "$ZED_REPO"
+    run "ZED_TEST_DATASET=$ZED_BASE PASSPHRASE='$PASSPHRASE' mix run -e \"
+        Zed.Bootstrap.init(
+          \\\"$ZED_BASE\\\",
+          passphrase: System.get_env(\\\"PASSPHRASE\\\"),
+          mountpoint: \\\"$BASE_MOUNTPOINT/secrets\\\"
+        ) |> IO.inspect()
+    \""
+    ok "secrets dataset created at ${ZED_BASE}/zed/secrets"
+fi
+
+[ -r "$BASE_MOUNTPOINT/secrets/demo_cluster_cookie" ] \
+    || warn "demo_cluster_cookie missing — bootstrap may not include the demo slot yet"
+
+# ----------------------------------------------------------------------
+phase "PHASE 2: zed converge (datasets + cluster artifact)"
+
+cd "$ZED_REPO"
+run "MIX_ENV=prod mix run -e 'MyInfra.Demo.converge() |> IO.inspect(label: :converge)'"
+ok "converge complete"
+
+[ -r "$BASE_MOUNTPOINT/cluster/demo.config" ] \
+    || bad "cluster artifact not written; check converge output"
+note "cluster artifact: $BASE_MOUNTPOINT/cluster/demo.config"
+cat "$BASE_MOUNTPOINT/cluster/demo.config" 2>/dev/null | sed 's/^/    /'
+
+# ----------------------------------------------------------------------
+phase "PHASE 3: bastille jails (5 BEAM + 2 DB)"
+
+create_jail_if_missing() {
+    name="$1"
+    ip="$2"
+    if bastille list 2>/dev/null | awk '{print $2}' | grep -qx "$name"; then
+        ok "jail $name already exists"
+    else
+        note "creating $name @ $ip"
+        run "bastille create $name $RELEASE $ip"
+        ok "created $name"
+    fi
+}
+
+# DB jails first — apps depend on them
+echo "$DB_JAILS" | while read name ip; do
+    [ -z "$name" ] && continue
+    create_jail_if_missing "$name" "$ip"
+done
+
+# BEAM jails
+echo "$BEAM_JAILS" | while read name ip rel_name; do
+    [ -z "$name" ] && continue
+    create_jail_if_missing "$name" "$ip"
+done
+
+# ----------------------------------------------------------------------
+phase "PHASE 4: DB bootstrap scripts"
+
+if [ -x "$ZED_REPO/scripts/demo-pg-bootstrap.sh" ]; then
+    run "$ZED_REPO/scripts/demo-pg-bootstrap.sh"
+    ok "pg bootstrap"
+else
+    warn "demo-pg-bootstrap.sh not executable; skipping"
+fi
+
+if [ -x "$ZED_REPO/scripts/demo-ch-bootstrap.sh" ]; then
+    run "$ZED_REPO/scripts/demo-ch-bootstrap.sh"
+    ok "ch bootstrap"
+else
+    warn "demo-ch-bootstrap.sh not executable; skipping"
+fi
+
+# ----------------------------------------------------------------------
+phase "PHASE 5: nullfs mount — cluster artifact + cookie into each BEAM jail"
+
+# Each BEAM jail gets <BASE_MOUNTPOINT> mounted ro at /var/db/zed
+# so the app's runtime.exs can read /var/db/zed/cluster/demo.config
+# and /var/db/zed/secrets/demo_cluster_cookie identically across jails.
+mount_zed_into_jail() {
+    name="$1"
+    target="$BASTILLE_JAILS/$name/root/var/db/zed"
+    if [ ! -d "$target" ]; then
+        run "mkdir -p $target"
+    fi
+    if mount -t nullfs | grep -q "on $target "; then
+        ok "$name: /var/db/zed already mounted"
+    else
+        run "mount -t nullfs -o ro $BASE_MOUNTPOINT $target"
+        ok "$name: nullfs ro mount of $BASE_MOUNTPOINT"
+    fi
+}
+
+echo "$BEAM_JAILS" | while read name ip rel_name; do
+    [ -z "$name" ] && continue
+    mount_zed_into_jail "$name"
+done
+
+# ----------------------------------------------------------------------
+phase "PHASE 6: stage releases into BEAM jails"
+
+stage_release() {
+    name="$1"
+    rel_name="$2"
+    src="$RELEASES_DIR/$rel_name"
+    dst="$BASTILLE_JAILS/$name/root/srv/$rel_name"
+
+    run "mkdir -p $dst"
+    note "  $src/  →  $dst/"
+    run "cp -R $src/* $dst/"
+    ok "$name: release staged at /srv/$rel_name"
+}
+
+echo "$BEAM_JAILS" | while read name ip rel_name; do
+    [ -z "$name" ] && continue
+    stage_release "$name" "$rel_name"
+done
+
+# ----------------------------------------------------------------------
+phase "PHASE 7: start BEAMs"
+
+start_beam() {
+    name="$1"
+    rel_name="$2"
+    cmd="/srv/$rel_name/bin/$rel_name daemon"
+    note "starting $name: $cmd"
+    run "bastille cmd $name $cmd" || warn "$name start may have non-zero exit (daemon detach)"
+    ok "$name started"
+}
+
+echo "$BEAM_JAILS" | while read name ip rel_name; do
+    [ -z "$name" ] && continue
+    start_beam "$name" "$rel_name"
+done
+
+note "waiting 10s for nodes to settle"
+[ "$DRY_RUN" = "0" ] && sleep 10
+
+# ----------------------------------------------------------------------
+phase "PHASE 8: cluster verification"
+
+if [ "$DRY_RUN" = "1" ]; then
+    note "skipped under --dry-run"
+else
+    cookie=$(cat "$BASE_MOUNTPOINT/secrets/demo_cluster_cookie")
+    note "querying zedweb@10.17.89.10 for Node.list()"
+
+    bastille cmd zedweb /srv/zedweb/bin/zedweb rpc \
+        "IO.inspect(Node.list(), label: :nodes)" 2>&1 \
+        | sed 's/^/    /' \
+        || warn "Node.list query failed — peer connection may need more time"
+fi
+
+# ----------------------------------------------------------------------
+printf '\n%sdemo converge complete%s\n' "$BOLD" "$RESET"
+printf '  zedweb dashboard:  http://10.17.89.10:4040/admin\n'
+printf '  livebook:          http://10.17.89.13:8080/\n'
+printf '  craftplan:         http://10.17.89.11:4000/\n'
+printf '  plausible:         http://10.17.89.12:8000/\n'
+printf '  exmc:              (BEAM-only, no http)\n'
+printf '\n'
+printf 'next: open browser to one of the URLs above, or attach a remsh:\n'
+printf '  doas bastille console zedweb\n'
+printf '  iex --remsh zedweb@10.17.89.10 --cookie "$(cat /var/db/zed/secrets/demo_cluster_cookie)"\n'
