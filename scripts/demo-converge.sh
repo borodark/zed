@@ -345,6 +345,37 @@ fi
 export RELEASE_DISTRIBUTION=name
 export RELEASE_NODE="${rel_name}@${ip}"
 ENVEOF
+
+        # Per-app env vars. PG_PASSWD is the plaintext password set during
+        # pg bootstrap — stored in the operator's records, not in the secrets
+        # dataset (which only holds the hash). For a real deploy this comes
+        # from a vault; for the demo we read it from the env or use the known value.
+        PG_PASSWD="${PG_APP_PASSWD:-h7Y6GOAvWYzGNPZLckMS-Q}"
+        case "$rel_name" in
+            craftplan)
+                cat >> "$env_dir/env.sh" <<APPEOF
+export DATABASE_URL="ecto://craftplan:${PG_PASSWD}@10.17.89.20/craftplan"
+export SECRET_KEY_BASE="\$(cat /var/db/zed/secrets/beam_cookie)"
+export PHX_HOST="10.17.89.11"
+export PORT="4000"
+APPEOF
+                ;;
+            plausible)
+                cat >> "$env_dir/env.sh" <<APPEOF
+export DATABASE_URL="ecto://plausible:${PG_PASSWD}@10.17.89.20/plausible_db"
+export CLICKHOUSE_DATABASE_URL="http://10.17.89.21:8123/plausible_events_db"
+export SECRET_KEY_BASE="\$(cat /var/db/zed/secrets/beam_cookie)"
+export BASE_URL="http://10.17.89.12:8000"
+export HTTP_PORT="8000"
+APPEOF
+                ;;
+            exmc)
+                cat >> "$env_dir/env.sh" <<APPEOF
+export ALPACA_API_KEY_ID="\${ALPACA_API_KEY_ID:-demo}"
+export ALPACA_SECRET_KEY="\${ALPACA_SECRET_KEY:-demo}"
+APPEOF
+                ;;
+        esac
         ok "$rel_name: env.sh written"
     fi
 }
