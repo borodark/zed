@@ -23,7 +23,7 @@ CH_CONFIG_SRC="${SCRIPT_DIR}/clickhouse-config"
 CH_CONFIG_DST="/usr/local/etc/clickhouse-server"
 
 echo "==> Creating jail: ${JAIL}"
-if bastille list | grep -q "^${JAIL}\$"; then
+if bastille list 2>/dev/null | awk '{print $2}' | grep -qx "${JAIL}"; then
     echo "    jail ${JAIL} already exists, skipping create"
 else
     bastille create "${JAIL}" "${RELEASE}" "${IP}"
