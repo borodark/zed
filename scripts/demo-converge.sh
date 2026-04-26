@@ -251,6 +251,15 @@ done
 # ----------------------------------------------------------------------
 phase "PHASE 6: stage releases into BEAM jails"
 
+# Stop any running BEAMs first — cp can't overwrite binaries in use
+echo "$BEAM_JAILS" | while read name ip rel_name; do
+    [ -z "$name" ] && continue
+    if [ -x "$BASTILLE_JAILS/$name/root/srv/$rel_name/bin/$rel_name" ]; then
+        note "stopping $name (if running)"
+        run "bastille cmd $name /srv/$rel_name/bin/$rel_name stop 2>/dev/null || true"
+    fi
+done
+
 stage_release() {
     name="$1"
     rel_name="$2"
