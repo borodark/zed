@@ -311,6 +311,8 @@ write_env_sh() {
         note "writing env.sh for livebook (replaces upstream)"
         cat > "$env_dir/env.sh" <<ENVEOF
 #!/bin/sh
+# Erlang runtime from pkg — not in default PATH
+export PATH="/usr/local/lib/erlang27/bin:\$PATH"
 # Demo cluster env for livebook — replaces upstream's bash-heavy env.sh
 COOKIE_FILE="/var/db/zed/secrets/demo_cluster_cookie"
 if [ -r "\$COOKIE_FILE" ]; then
@@ -333,6 +335,8 @@ ENVEOF
         note "writing env.sh for $rel_name (cookie + node + longnames)"
         cat > "$env_dir/env.sh" <<ENVEOF
 #!/bin/sh
+# Erlang runtime from pkg — not in default PATH
+export PATH="/usr/local/lib/erlang27/bin:\$PATH"
 COOKIE_FILE="/var/db/zed/secrets/demo_cluster_cookie"
 if [ -r "\$COOKIE_FILE" ]; then
     RELEASE_COOKIE="\$(cat "\$COOKIE_FILE")"
@@ -376,13 +380,17 @@ phase "PHASE 8: cluster verification"
 if [ "$DRY_RUN" = "1" ]; then
     note "skipped under --dry-run"
 else
-    cookie=$(cat "$BASE_MOUNTPOINT/secrets/demo_cluster_cookie")
-    note "querying zedweb@10.17.89.10 for Node.list()"
-
-    bastille cmd zedweb /srv/zedweb/bin/zedweb rpc \
-        "IO.inspect(Node.list(), label: :nodes)" 2>&1 \
-        | sed 's/^/    /' \
-        || warn "Node.list query failed — peer connection may need more time"
+    # Manually connect the cluster — apps don't have libcluster yet.
+    # Use zedweb as the hub; connect to all other BEAM nodes.
+    note "forming cluster from zedweb (manual Node.connect)"
+    bastille cmd zedweb /srv/zedweb/bin/zedweb rpc "
+        peers = [:\"craftplan@10.17.89.11\", :\"plausible@10.17.89.12\",
+                 :\"livebook@10.17.89.13\", :\"exmc@10.17.89.14\"]
+        results = Enum.map(peers, fn p -> {p, Node.connect(p)} end)
+        IO.inspect(results, label: :connect_results)
+        IO.inspect(Node.list(), label: :cluster)
+    " 2>&1 | sed 's/^/    /' \
+        || warn "cluster formation failed"
 fi
 
 # ----------------------------------------------------------------------
