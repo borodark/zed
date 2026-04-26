@@ -26,8 +26,9 @@ else
     bastille create "${JAIL}" "${RELEASE}" "${IP}"
 fi
 
-echo "==> Starting jail: ${JAIL}"
-bastille start "${JAIL}" || true
+echo "==> Enabling sysvipc (PostgreSQL needs SysV shared memory)"
+bastille config "${JAIL}" set allow.sysvipc 2>/dev/null || true
+bastille restart "${JAIL}" 2>/dev/null || bastille start "${JAIL}" || true
 
 echo "==> Installing postgresql16-server"
 bastille pkg "${JAIL}" install -y postgresql16-server
@@ -45,7 +46,7 @@ else
 fi
 
 echo "==> Starting postgresql"
-bastille service "${JAIL}" postgresql start
+bastille service "${JAIL}" postgresql start || bastille service "${JAIL}" postgresql status || true
 
 echo "==> Creating databases and users"
 # Wait briefly for PG to accept connections
