@@ -256,7 +256,8 @@ echo "$BEAM_JAILS" | while read name ip rel_name; do
     [ -z "$name" ] && continue
     if [ -x "$BASTILLE_JAILS/$name/root/srv/$rel_name/bin/$rel_name" ]; then
         note "stopping $name (if running)"
-        run "bastille cmd $name /srv/$rel_name/bin/$rel_name stop 2>/dev/null || true"
+        run "bastille cmd $name /srv/$rel_name/bin/$rel_name stop 2>/dev/null || bastille cmd $name sh -c 'pkill -9 beam.smp 2>/dev/null; pkill -9 epmd 2>/dev/null; pkill -9 run_erl 2>/dev/null' 2>/dev/null || true"
+        sleep 1
     fi
 done
 
