@@ -232,6 +232,9 @@ phase "PHASE 5: nullfs mount — cluster artifact + cookie into each BEAM jail"
 mount_zed_into_jail() {
     name="$1"
     target="$BASTILLE_JAILS/$name/root/var/db/zed"
+    secrets_target="$target/secrets"
+
+    # Mount the base /var/db/zed (cluster artifact lives here)
     if [ ! -d "$target" ]; then
         run "mkdir -p $target"
     fi
@@ -240,6 +243,18 @@ mount_zed_into_jail() {
     else
         run "mount -t nullfs -o ro $BASE_MOUNTPOINT $target"
         ok "$name: nullfs ro mount of $BASE_MOUNTPOINT"
+    fi
+
+    # Mount secrets separately — it's a child ZFS dataset with its own
+    # mountpoint, so nullfs of the parent doesn't include it.
+    if [ ! -d "$secrets_target" ]; then
+        run "mkdir -p $secrets_target"
+    fi
+    if mount -t nullfs | grep -q "on $secrets_target "; then
+        ok "$name: /var/db/zed/secrets already mounted"
+    else
+        run "mount -t nullfs -o ro $BASE_MOUNTPOINT/secrets $secrets_target"
+        ok "$name: nullfs ro mount of secrets"
     fi
 }
 
