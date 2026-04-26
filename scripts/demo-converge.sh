@@ -278,9 +278,13 @@ echo "$BEAM_JAILS" | while read name ip rel_name; do
     stage_release "$name" "$rel_name"
 done
 
-# Write env.sh for releases that don't ship their own cookie/node config.
-# zedweb's release comes from the zed repo which doesn't have a demo-specific
-# rel/env.sh.eex. Livebook reads LIVEBOOK_NODE/LIVEBOOK_COOKIE from env.
+# Write env.sh for every BEAM jail. Every app needs:
+#   - RELEASE_DISTRIBUTION=name (longnames for IP-based node names)
+#   - RELEASE_COOKIE from the secrets dataset
+#   - RELEASE_NODE set to <app>@<jail-ip>
+# Livebook additionally needs LIVEBOOK_* env vars and its own
+# distribution management replaced (its upstream env.sh uses bash-isms
+# that break under /bin/sh in the jail).
 write_env_sh() {
     name="$1"
     ip="$2"
@@ -288,44 +292,41 @@ write_env_sh() {
     env_dir=$(find "$BASTILLE_JAILS/$name/root/srv/$rel_name/releases" -mindepth 1 -maxdepth 1 -type d | head -1)
     [ -z "$env_dir" ] && return
 
-    if [ "$rel_name" = "zedweb" ]; then
-        note "writing env.sh for zedweb (cookie + node)"
-        cat > "$env_dir/env.sh" <<'ENVEOF'
+    if [ "$rel_name" = "livebook" ]; then
+        note "writing env.sh for livebook (replaces upstream)"
+        cat > "$env_dir/env.sh" <<ENVEOF
+#!/bin/sh
+# Demo cluster env for livebook — replaces upstream's bash-heavy env.sh
+COOKIE_FILE="/var/db/zed/secrets/demo_cluster_cookie"
+if [ -r "\$COOKIE_FILE" ]; then
+    RELEASE_COOKIE="\$(cat "\$COOKIE_FILE")"
+    export RELEASE_COOKIE
+    export LIVEBOOK_COOKIE="\$RELEASE_COOKIE"
+fi
+export RELEASE_DISTRIBUTION=name
+export RELEASE_NODE="livebook@${ip}"
+export LIVEBOOK_NODE="livebook@${ip}"
+export LIVEBOOK_IP="${ip}"
+export LIVEBOOK_PORT="8080"
+export LIVEBOOK_PASSWORD="\$(cat /var/db/zed/secrets/livebook_passwd 2>/dev/null || echo demo)"
+export RELEASE_MODE=interactive
+cd \$HOME
+ENVEOF
+        chmod +x "$env_dir/env.sh"
+        ok "livebook: env.sh written"
+    else
+        note "writing env.sh for $rel_name (cookie + node + longnames)"
+        cat > "$env_dir/env.sh" <<ENVEOF
 #!/bin/sh
 COOKIE_FILE="/var/db/zed/secrets/demo_cluster_cookie"
-if [ -r "$COOKIE_FILE" ]; then
-    RELEASE_COOKIE="$(cat "$COOKIE_FILE")"
+if [ -r "\$COOKIE_FILE" ]; then
+    RELEASE_COOKIE="\$(cat "\$COOKIE_FILE")"
     export RELEASE_COOKIE
 fi
-RELEASE_NODE="zedweb@10.17.89.10"
-export RELEASE_NODE
+export RELEASE_DISTRIBUTION=name
+export RELEASE_NODE="${rel_name}@${ip}"
 ENVEOF
-        ok "zedweb: env.sh written"
-    fi
-
-    if [ "$rel_name" = "livebook" ]; then
-        note "writing env.sh wrapper for livebook (LIVEBOOK_NODE + LIVEBOOK_COOKIE)"
-        # Livebook's env.sh is complex (handles Fly, ECS, etc.) — prepend
-        # our vars so the existing script picks them up.
-        tmpf=$(mktemp)
-        cat > "$tmpf" <<'ENVEOF'
-#!/bin/sh
-# Demo cluster: set node identity before livebook's own env.sh logic
-COOKIE_FILE="/var/db/zed/secrets/demo_cluster_cookie"
-if [ -r "$COOKIE_FILE" ]; then
-    export LIVEBOOK_COOKIE="$(cat "$COOKIE_FILE")"
-    export RELEASE_COOKIE="$LIVEBOOK_COOKIE"
-fi
-export LIVEBOOK_NODE="livebook@10.17.89.13"
-export LIVEBOOK_IP="10.17.89.13"
-export LIVEBOOK_PORT="8080"
-export LIVEBOOK_PASSWORD="$(cat /var/db/zed/secrets/livebook_passwd 2>/dev/null || echo demo)"
-ENVEOF
-        # Append the original env.sh (skipping its shebang)
-        tail -n +2 "$env_dir/env.sh" >> "$tmpf"
-        mv "$tmpf" "$env_dir/env.sh"
-        chmod +x "$env_dir/env.sh"
-        ok "livebook: env.sh prepended with demo config"
+        ok "$rel_name: env.sh written"
     fi
 }
 
