@@ -108,7 +108,35 @@ defmodule Zed.Converge.Plan do
     |> Kernel.++(build_jail_svc_steps(jail_id, config))
   end
 
+  # Cluster diff → write the plain-text host-list artifact under the
+  # zed dataset. Apps' runtime.exs reads it (zed-dep via
+  # Zed.Cluster.Config.load!/1, or zed-less via File.read|split).
+  # Members may legitimately be empty (cluster declared but unpopulated)
+  # — still write the file so the consumer doesn't see a stale one.
+  defp expand_to_steps(%Diff{resource: %{type: :cluster} = node, action: :create}, pool) do
+    [
+      %Step{
+        id: "cluster:config:#{node.id}",
+        type: :cluster_config,
+        action: :create,
+        args: %{
+          cluster_id: node.id,
+          members: node.config[:members] || [],
+          base_mountpoint: cluster_base_mountpoint(pool)
+        }
+      }
+    ]
+  end
+
   defp expand_to_steps(_, _pool), do: []
+
+  # The cluster artifact lives under <base>/zed/cluster/. Default
+  # base mountpoint is the canonical /var/db/zed (matches what the
+  # bootstrap secrets dataset mounts as); operators can override
+  # via app config.
+  defp cluster_base_mountpoint(_pool) do
+    Application.get_env(:zed, :base_mountpoint, "/var/db/zed")
+  end
 
   # --- Step Builders: Jails ---
 
@@ -255,12 +283,30 @@ defmodule Zed.Converge.Plan do
   defp maybe_dataset_dep(nil), do: []
   defp maybe_dataset_dep(ds), do: ["dataset:create:#{ds}"]
 
-  # Sort: datasets → jails → apps → services
+  # Sort: datasets → snapshot → cluster_config → jails → apps → services
   # Within type: install → create → restart
+  #
+  # cluster_config slots between snapshot and jail because the
+  # artifact has to exist BEFORE jails get their nullfs mounts of
+  # /var/db/zed; otherwise the first app to boot inside a jail would
+  # see a missing artifact. Doesn't depend on any specific dataset
+  # being created — only the parent secrets dataset, which the
+  # bootstrap step ensures.
   defp sort_by_type(steps) do
     steps
     |> Enum.sort_by(fn step ->
-      type_priority = %{dataset: 0, snapshot: 1, jail: 2, jail_pkg: 3, jail_mount: 4, app: 5, jail_svc: 6, service: 7}
+      type_priority = %{
+        dataset: 0,
+        snapshot: 1,
+        cluster_config: 2,
+        jail: 3,
+        jail_pkg: 4,
+        jail_mount: 5,
+        app: 6,
+        jail_svc: 7,
+        service: 8
+      }
+
       action_priority = %{install: 0, create: 1, start: 2, restart: 3}
 
       {

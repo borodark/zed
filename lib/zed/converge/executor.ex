@@ -127,6 +127,33 @@ defmodule Zed.Converge.Executor do
     {:ok, {:jail_svc_pending, args.jail, args.service}}
   end
 
+  # Cluster artifact write — touches the host filesystem under
+  # <base>/zed/cluster/<id>.config. Synthesises a one-cluster IR
+  # to feed the existing Cluster.Config.write!/3 helper instead of
+  # duplicating its formatting logic.
+  defp execute_step(%Step{type: :cluster_config, action: :create, args: args}, _platform) do
+    fake_ir = %Zed.IR{
+      name: :__step__,
+      pool: nil,
+      datasets: [],
+      apps: [],
+      jails: [],
+      zones: [],
+      clusters: [
+        %Zed.IR.Node{
+          id: args.cluster_id,
+          type: :cluster,
+          config: %{members: args.members},
+          deps: []
+        }
+      ],
+      snapshot_config: %{}
+    }
+
+    {:ok, [path]} = Zed.Cluster.Config.write!(fake_ir, args.base_mountpoint)
+    {:ok, {:cluster_config_written, path}}
+  end
+
   defp execute_step(%Step{} = step, _platform) do
     {:error, {:unknown_step, step.type, step.action}}
   end
