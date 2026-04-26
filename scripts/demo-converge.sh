@@ -114,27 +114,35 @@ phase "PHASE 1: zed bootstrap (secrets + cluster cookie)"
 
 ZED_BASE="$POOL"
 
+# init is idempotent: existing datasets are kept, existing slots are
+# skipped, only missing slots get generated. Always run it so new
+# catalog entries (demo_cluster_cookie, pg_admin_passwd, etc.) get
+# created even when the base dataset already exists.
 if zfs list -H -o name "${ZED_BASE}/zed" >/dev/null 2>&1; then
-    ok "${ZED_BASE}/zed already exists; skipping bootstrap init"
+    ok "${ZED_BASE}/zed already exists; will generate any missing slots"
+    PASSPHRASE="${PASSPHRASE:-}"
+    if [ -z "$PASSPHRASE" ]; then
+        bad "PASSPHRASE env var required to unlock existing secrets dataset"
+    fi
 else
     note "generating bootstrap passphrase + secrets"
     PASSPHRASE=$(openssl rand -base64 32 | tr -d '\n')
     printf '  bootstrap passphrase (RECORD THIS — needed for future unlocks):\n'
     printf '  %s\n\n' "$PASSPHRASE"
+fi
 
-    cd "$ZED_REPO"
-    run "PASSPHRASE='$PASSPHRASE' mix run -e \"
-        Zed.Bootstrap.init(
-          \\\"$ZED_BASE\\\",
-          passphrase: System.get_env(\\\"PASSPHRASE\\\"),
-          mountpoint: \\\"$BASE_MOUNTPOINT/secrets\\\"
-        ) |> IO.inspect()
-    \""
-    if [ "$DRY_RUN" = "0" ]; then
-        ok "secrets dataset created at ${ZED_BASE}/zed/secrets"
-    else
-        note "(dry) would create ${ZED_BASE}/zed/secrets"
-    fi
+cd "$ZED_REPO"
+run "PASSPHRASE='$PASSPHRASE' ELIXIR_ERL_OPTIONS='+fnu' mix run -e \"
+    Zed.Bootstrap.init(
+      \\\"$ZED_BASE\\\",
+      passphrase: System.get_env(\\\"PASSPHRASE\\\"),
+      mountpoint: \\\"$BASE_MOUNTPOINT/secrets\\\"
+    ) |> IO.inspect()
+\""
+if [ "$DRY_RUN" = "0" ]; then
+    ok "bootstrap complete"
+else
+    note "(dry) would run bootstrap init"
 fi
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -142,14 +150,14 @@ if [ "$DRY_RUN" = "1" ]; then
 elif [ -r "$BASE_MOUNTPOINT/secrets/demo_cluster_cookie" ]; then
     ok "demo_cluster_cookie present"
 else
-    warn "demo_cluster_cookie missing — bootstrap may not include the demo slot yet"
+    bad "demo_cluster_cookie still missing after bootstrap — check catalog slots"
 fi
 
 # ----------------------------------------------------------------------
 phase "PHASE 2: zed converge (datasets + cluster artifact)"
 
 cd "$ZED_REPO"
-run "MIX_ENV=prod mix run -e 'MyInfra.Demo.converge() |> IO.inspect(label: :converge)'"
+run "ELIXIR_ERL_OPTIONS='+fnu' MIX_ENV=prod mix run -e 'Zed.Examples.DemoOffCompose.converge() |> IO.inspect(label: :converge)'"
 
 if [ "$DRY_RUN" = "0" ]; then
     ok "converge complete"
