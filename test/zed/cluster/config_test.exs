@@ -34,7 +34,7 @@ defmodule Zed.Cluster.ConfigTest do
   end
 
   describe "write!/3 + load!/1 round-trip" do
-    test "writes one file per cluster and loads each topology back" do
+    test "writes one file per cluster as plain text and loads host atoms back" do
       base = tmp_dir()
 
       result =
@@ -53,19 +53,22 @@ defmodule Zed.Cluster.ConfigTest do
       assert {:ok, paths} = result
       assert length(paths) == 2
 
-      # File order across hosts isn't guaranteed; look up by name.
       demo_path = Enum.find(paths, &String.ends_with?(&1, "demo.config"))
       bg_path = Enum.find(paths, &String.ends_with?(&1, "bg.config"))
 
-      assert File.regular?(demo_path)
-      assert File.regular?(bg_path)
+      # File contents are plain text — universally consumable.
+      assert File.read!(demo_path) == "web@10.0.0.1\nworker@10.0.0.2\n"
+      assert File.read!(bg_path) == "job@10.0.0.3\n"
 
-      demo = Config.load!(demo_path)
-      assert demo[:strategy] == Cluster.Strategy.Epmd
-      assert demo[:config][:hosts] == [:"web@10.0.0.1", :"worker@10.0.0.2"]
+      # load!/1 returns the host atoms directly.
+      assert Config.load!(demo_path) == [:"web@10.0.0.1", :"worker@10.0.0.2"]
+      assert Config.load!(bg_path) == [:"job@10.0.0.3"]
 
-      bg = Config.load!(bg_path)
-      assert bg[:config][:hosts] == [:"job@10.0.0.3"]
+      # topology!/1 wraps in the libcluster Epmd shape.
+      assert Config.topology!(demo_path) == [
+               strategy: Cluster.Strategy.Epmd,
+               config: [hosts: [:"web@10.0.0.1", :"worker@10.0.0.2"]]
+             ]
     end
 
     test "no clusters → empty file list" do
@@ -117,12 +120,45 @@ defmodule Zed.Cluster.ConfigTest do
       assert_raise File.Error, fn -> Config.load!("/nonexistent/cluster.config") end
     end
 
-    test "raises on garbage contents" do
+    test "tolerates blank lines and # comments" do
+      base = tmp_dir()
+      path = Path.join(base, "annotated.config")
+      File.write!(path, """
+      # demo cluster — five nodes
+      web@10.0.0.1
+
+      # workers
+      worker@10.0.0.2
+      worker@10.0.0.3
+
+      """)
+
+      assert Config.load!(path) ==
+               [:"web@10.0.0.1", :"worker@10.0.0.2", :"worker@10.0.0.3"]
+    end
+
+    test "rejects malformed lines (no @ separator)" do
       base = tmp_dir()
       bad = Path.join(base, "bad.config")
-      File.write!(bad, "not a term-binary")
+      File.write!(bad, "garbage_no_at_sign\n")
 
-      assert_raise ArgumentError, fn -> Config.load!(bad) end
+      assert_raise ArgumentError, ~r/not a valid node atom/, fn -> Config.load!(bad) end
+    end
+
+    test "rejects empty name half" do
+      base = tmp_dir()
+      bad = Path.join(base, "bad.config")
+      File.write!(bad, "@host\n")
+
+      assert_raise ArgumentError, ~r/not a valid node atom/, fn -> Config.load!(bad) end
+    end
+
+    test "rejects empty host half" do
+      base = tmp_dir()
+      bad = Path.join(base, "bad.config")
+      File.write!(bad, "name@\n")
+
+      assert_raise ArgumentError, ~r/not a valid node atom/, fn -> Config.load!(bad) end
     end
   end
 

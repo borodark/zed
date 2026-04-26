@@ -22,10 +22,29 @@ defmodule Zed.Converge.Diff do
     [
       diff_datasets(ir),
       diff_apps(ir),
-      diff_jails(ir)
+      diff_jails(ir),
+      diff_clusters(ir)
     ]
     |> List.flatten()
     |> Enum.reject(fn d -> d.action == :noop end)
+  end
+
+  # Cluster diffs are unconditional :create entries — the artifact
+  # write is idempotent (Zed.Cluster.Config.write!/3 atomic-renames
+  # over any prior file), and we want the artifact rewritten on
+  # every converge so members/cookie/topology stay in sync with the
+  # IR. This trades a microsecond of disk write for the guarantee
+  # that a stale config never lingers across a deploy.
+  defp diff_clusters(%IR{clusters: clusters}) do
+    Enum.map(clusters, fn node ->
+      %__MODULE__{
+        resource: node,
+        action: :create,
+        current: nil,
+        desired: node.config,
+        changes: [{:cluster_config, nil, node.id}]
+      }
+    end)
   end
 
   # --- Datasets ---
