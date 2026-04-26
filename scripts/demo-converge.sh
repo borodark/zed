@@ -123,30 +123,43 @@ else
     printf '  %s\n\n' "$PASSPHRASE"
 
     cd "$ZED_REPO"
-    run "ZED_TEST_DATASET=$ZED_BASE PASSPHRASE='$PASSPHRASE' mix run -e \"
+    run "PASSPHRASE='$PASSPHRASE' mix run -e \"
         Zed.Bootstrap.init(
           \\\"$ZED_BASE\\\",
           passphrase: System.get_env(\\\"PASSPHRASE\\\"),
           mountpoint: \\\"$BASE_MOUNTPOINT/secrets\\\"
         ) |> IO.inspect()
     \""
-    ok "secrets dataset created at ${ZED_BASE}/zed/secrets"
+    if [ "$DRY_RUN" = "0" ]; then
+        ok "secrets dataset created at ${ZED_BASE}/zed/secrets"
+    else
+        note "(dry) would create ${ZED_BASE}/zed/secrets"
+    fi
 fi
 
-[ -r "$BASE_MOUNTPOINT/secrets/demo_cluster_cookie" ] \
-    || warn "demo_cluster_cookie missing — bootstrap may not include the demo slot yet"
+if [ "$DRY_RUN" = "1" ]; then
+    note "(dry) skipping demo_cluster_cookie file check"
+elif [ -r "$BASE_MOUNTPOINT/secrets/demo_cluster_cookie" ]; then
+    ok "demo_cluster_cookie present"
+else
+    warn "demo_cluster_cookie missing — bootstrap may not include the demo slot yet"
+fi
 
 # ----------------------------------------------------------------------
 phase "PHASE 2: zed converge (datasets + cluster artifact)"
 
 cd "$ZED_REPO"
 run "MIX_ENV=prod mix run -e 'MyInfra.Demo.converge() |> IO.inspect(label: :converge)'"
-ok "converge complete"
 
-[ -r "$BASE_MOUNTPOINT/cluster/demo.config" ] \
-    || bad "cluster artifact not written; check converge output"
-note "cluster artifact: $BASE_MOUNTPOINT/cluster/demo.config"
-cat "$BASE_MOUNTPOINT/cluster/demo.config" 2>/dev/null | sed 's/^/    /'
+if [ "$DRY_RUN" = "0" ]; then
+    ok "converge complete"
+    [ -r "$BASE_MOUNTPOINT/cluster/demo.config" ] \
+        || bad "cluster artifact not written; check converge output"
+    note "cluster artifact: $BASE_MOUNTPOINT/cluster/demo.config"
+    cat "$BASE_MOUNTPOINT/cluster/demo.config" 2>/dev/null | sed 's/^/    /'
+else
+    note "(dry) would write $BASE_MOUNTPOINT/cluster/demo.config"
+fi
 
 # ----------------------------------------------------------------------
 phase "PHASE 3: bastille jails (5 BEAM + 2 DB)"
