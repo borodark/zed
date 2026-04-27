@@ -46,18 +46,18 @@ IO.puts("Model defined (10 observations, estimating mu and sigma)")
 IO.puts("Will sample on: exmc@10.17.89.14")
 ```
 
-## Run Sampling on eXMC (Remote)
+## Run 4 Chains on eXMC (Remote)
 
-The actual NUTS sampling runs on the exmc node. We send the model
-definition over and get back the posterior samples. The BEAM
-serializes everything transparently — no REST, no protobuf, no JSON.
+Four independent MCMC chains run in parallel on the exmc node.
+We send the model over via `:erpc`, exmc runs `sample_chains/3`,
+and returns all 4 traces back to Livebook as Nx tensors.
 
 ```elixir
-# Ship the sampling job to exmc via :erpc
-# This runs on the exmc node's BEAM, using its CPU, returning results here.
-{time_us, result} = :timer.tc(fn ->
-  :erpc.call(:"exmc@10.17.89.14", fn ->
-    # Evaluate the model IR on the remote node
+# Ship 4-chain sampling to exmc via :erpc
+target = :"exmc@10.17.89.14"
+
+{time_us, chains} = :timer.tc(fn ->
+  :erpc.call(target, fn ->
     alias Exmc.{Builder, Dist}
 
     ir = Builder.new_ir()
@@ -67,40 +67,43 @@ serializes everything transparently — no REST, no protobuf, no JSON.
     observations = Nx.tensor([2.1, 2.5, 1.8, 2.3, 2.7, 1.9, 2.4, 2.2, 2.6, 2.0])
     ir = Builder.obs(ir, "y_obs", "y", observations)
 
-    # Sample — 1000 draws, 500 warmup (tuning)
-    Exmc.NUTS.Sampler.sample(ir, %{}, num_samples: 1000, num_warmup: 500)
-  end, 30_000)  # 30s timeout
+    # 4 chains, 1000 draws each, 500 warmup
+    Exmc.NUTS.Sampler.sample_chains(ir, 4, num_samples: 1000, num_warmup: 500)
+  end, 60_000)  # 60s timeout
 end)
 
-IO.puts("Sampling completed in #{div(time_us, 1000)}ms")
-IO.puts("Result keys: #{inspect(Map.keys(result))}")
+IO.puts("4 chains completed in #{div(time_us, 1000)}ms on #{target}")
+IO.puts("Chains returned: #{length(chains)}")
 ```
 
-## Inspect the Posterior
+## Inspect the Posterior (4 chains)
 
-The samples came back from exmc as Nx tensors — serialized over
+Four traces came back from exmc as Nx tensors — serialized over
 distributed Erlang, deserialized here in Livebook. Zero ceremony.
 
 ```elixir
-# Extract posterior samples
-mu_samples = result["mu"]
-sigma_samples = result["sigma"]
+# Summarize across all 4 chains
+for {chain, i} <- Enum.with_index(chains, 1) do
+  mu_samples = chain["mu"]
+  sigma_samples = chain["sigma"]
+  mu_mean = Nx.mean(mu_samples) |> Nx.to_number() |> Float.round(3)
+  sigma_mean = Nx.mean(sigma_samples) |> Nx.to_number() |> Float.round(3)
+  IO.puts("  Chain #{i}: mu=#{mu_mean}, sigma=#{sigma_mean}")
+end
 
-mu_mean = Nx.mean(mu_samples) |> Nx.to_number()
-mu_std = Nx.standard_deviation(mu_samples) |> Nx.to_number()
-sigma_mean = Nx.mean(sigma_samples) |> Nx.to_number()
+# Pool all chains
+all_mu = chains |> Enum.map(& &1["mu"]) |> Nx.concatenate()
+all_sigma = chains |> Enum.map(& &1["sigma"]) |> Nx.concatenate()
 
 IO.puts("""
-Posterior summary (#{Nx.size(mu_samples)} samples):
-  mu:    #{Float.round(mu_mean, 3)} ± #{Float.round(mu_std, 3)}
-  sigma: #{Float.round(sigma_mean, 3)}
 
-Expected (analytical for known sigma=1):
-  mu:    ~2.26 (data mean with prior shrinkage)
+Pooled posterior (#{Nx.size(all_mu)} total samples across 4 chains):
+  mu:    #{Nx.mean(all_mu) |> Nx.to_number() |> Float.round(3)} ± #{Nx.standard_deviation(all_mu) |> Nx.to_number() |> Float.round(3)}
+  sigma: #{Nx.mean(all_sigma) |> Nx.to_number() |> Float.round(3)}
 
-The sampling ran on exmc@10.17.89.14.
-The results are here on #{Node.self()}.
-No HTTP. No JSON. Just BEAM.
+Computed on: exmc@10.17.89.14
+Displayed on: #{Node.self()}
+Transport: :erpc over distributed Erlang (bastille0 loopback)
 """)
 ```
 
