@@ -320,8 +320,10 @@ if [ -r "\$COOKIE_FILE" ]; then
     export RELEASE_COOKIE
     export LIVEBOOK_COOKIE="\$RELEASE_COOKIE"
 fi
-export RELEASE_DISTRIBUTION=name
-export RELEASE_NODE="livebook@${ip}"
+# Livebook manages its own distribution via Node.start/2 in application.ex.
+# Set RELEASE_DISTRIBUTION=none so the release boot doesn't start dist first.
+# Livebook reads LIVEBOOK_NODE in config_runtime and calls Node.start itself.
+export RELEASE_DISTRIBUTION=none
 export LIVEBOOK_NODE="livebook@${ip}"
 export LIVEBOOK_IP="${ip}"
 export LIVEBOOK_PORT="8080"
