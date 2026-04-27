@@ -1,0 +1,116 @@
+# Cluster Sampling Demo: Livebook → eXMC via :erpc
+
+## The Setup
+
+This notebook runs inside the **livebook** jail (`10.17.89.13`).
+The sampling computation runs on the **exmc** jail (`10.17.89.14`).
+They're connected via distributed Erlang over bastille0 — same
+cookie, same cluster, different jails.
+
+No HTTP APIs. No message queues. Just `:erpc.call/4`.
+
+```elixir
+# Verify we're in the cluster
+IO.puts("I am: #{Node.self()}")
+IO.puts("My peers: #{inspect(Node.list())}")
+
+# Connect to exmc if not already connected
+unless :"exmc@10.17.89.14" in Node.list() do
+  Node.connect(:"exmc@10.17.89.14")
+end
+
+IO.puts("exmc connected: #{:"exmc@10.17.89.14" in Node.list()}")
+```
+
+## Define the Model
+
+A simple Bayesian model: estimate the mean of some observed data.
+We define the model here in Livebook but it's just data (an IR struct) —
+portable across nodes.
+
+```elixir
+# Build the model IR — this is just a data structure, no computation yet
+model_code = """
+alias Exmc.{Builder, Dist}
+
+ir = Builder.new_ir()
+ir = Builder.rv(ir, "mu", Dist.Normal, %{mu: Nx.tensor(0.0), sigma: Nx.tensor(10.0)})
+ir = Builder.rv(ir, "sigma", Dist.HalfNormal, %{sigma: Nx.tensor(2.0)})
+ir = Builder.rv(ir, "y", Dist.Normal, %{mu: "mu", sigma: "sigma"})
+observations = Nx.tensor([2.1, 2.5, 1.8, 2.3, 2.7, 1.9, 2.4, 2.2, 2.6, 2.0])
+ir = Builder.obs(ir, "y_obs", "y", observations)
+ir
+"""
+
+IO.puts("Model defined (10 observations, estimating mu and sigma)")
+IO.puts("Will sample on: exmc@10.17.89.14")
+```
+
+## Run Sampling on eXMC (Remote)
+
+The actual NUTS sampling runs on the exmc node. We send the model
+definition over and get back the posterior samples. The BEAM
+serializes everything transparently — no REST, no protobuf, no JSON.
+
+```elixir
+# Ship the sampling job to exmc via :erpc
+# This runs on the exmc node's BEAM, using its CPU, returning results here.
+{time_us, result} = :timer.tc(fn ->
+  :erpc.call(:"exmc@10.17.89.14", fn ->
+    # Evaluate the model IR on the remote node
+    alias Exmc.{Builder, Dist}
+
+    ir = Builder.new_ir()
+    ir = Builder.rv(ir, "mu", Dist.Normal, %{mu: Nx.tensor(0.0), sigma: Nx.tensor(10.0)})
+    ir = Builder.rv(ir, "sigma", Dist.HalfNormal, %{sigma: Nx.tensor(2.0)})
+    ir = Builder.rv(ir, "y", Dist.Normal, %{mu: "mu", sigma: "sigma"})
+    observations = Nx.tensor([2.1, 2.5, 1.8, 2.3, 2.7, 1.9, 2.4, 2.2, 2.6, 2.0])
+    ir = Builder.obs(ir, "y_obs", "y", observations)
+
+    # Sample — 1000 draws, 500 warmup (tuning)
+    Exmc.NUTS.Sampler.sample(ir, %{}, num_samples: 1000, num_warmup: 500)
+  end, 30_000)  # 30s timeout
+end)
+
+IO.puts("Sampling completed in #{div(time_us, 1000)}ms")
+IO.puts("Result keys: #{inspect(Map.keys(result))}")
+```
+
+## Inspect the Posterior
+
+The samples came back from exmc as Nx tensors — serialized over
+distributed Erlang, deserialized here in Livebook. Zero ceremony.
+
+```elixir
+# Extract posterior samples
+mu_samples = result["mu"]
+sigma_samples = result["sigma"]
+
+mu_mean = Nx.mean(mu_samples) |> Nx.to_number()
+mu_std = Nx.standard_deviation(mu_samples) |> Nx.to_number()
+sigma_mean = Nx.mean(sigma_samples) |> Nx.to_number()
+
+IO.puts("""
+Posterior summary (#{Nx.size(mu_samples)} samples):
+  mu:    #{Float.round(mu_mean, 3)} ± #{Float.round(mu_std, 3)}
+  sigma: #{Float.round(sigma_mean, 3)}
+
+Expected (analytical for known sigma=1):
+  mu:    ~2.26 (data mean with prior shrinkage)
+
+The sampling ran on exmc@10.17.89.14.
+The results are here on #{Node.self()}.
+No HTTP. No JSON. Just BEAM.
+""")
+```
+
+## What This Demonstrates
+
+1. **Livebook** is the interactive frontend (notebook UI)
+2. **eXMC** is the compute backend (NUTS sampler)
+3. **Connection**: distributed Erlang over bastille0, shared cookie from ZFS secrets
+4. **Serialization**: Nx tensors travel over `:erpc` transparently
+5. **No infrastructure between them**: no REST API, no message queue, no service mesh
+
+This is what "off docker-compose" looks like for compute workloads:
+the cluster IS the API.
