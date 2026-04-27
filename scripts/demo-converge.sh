@@ -356,6 +356,7 @@ ENVEOF
                 cat >> "$env_dir/env.sh" <<APPEOF
 export DATABASE_URL="ecto://craftplan:${PG_PASSWD}@10.17.89.20/craftplan"
 export SECRET_KEY_BASE="\$(cat /var/db/zed/secrets/beam_cookie)"
+export TOKEN_SIGNING_SECRET="\$(cat /var/db/zed/secrets/beam_cookie)"
 export PHX_HOST="10.17.89.11"
 export PORT="4000"
 APPEOF
