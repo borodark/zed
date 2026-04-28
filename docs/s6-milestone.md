@@ -82,6 +82,63 @@ doas env POOL=mac_zroot PASSPHRASE='aaDjeCIRJN0REcVYvFK3VYZbGLgvLEvgYxo35vRULGA=
   sh /home/io/zed/scripts/demo-converge.sh
 ```
 
+## What changed since initial milestone
+
+**LiveView cluster page at /cluster on zedweb.** A Phoenix LiveView
+showing `Node.list()` in real time, with a button that triggers NUTS
+sampling on exmc via `:rpc.call`. Proves the full loop: browser →
+zedweb → distributed Erlang → exmc computation → result back to
+LiveView. No asset pipeline — JS loaded via CDN ESM imports from
+jsdelivr (Phoenix LiveView client, topbar).
+
+**Livebook EPMD research.** Standalone runtimes (Livebook's default)
+cannot join an external BEAM cluster because they use `Livebook.EPMD`
+as a custom EPMD module and short names. Solution: configure Livebook
+with `--hidden` node and explicit longname + cookie via env.sh. The
+node appears in `Node.list(:hidden)` but does not disrupt the main
+cluster topology.
+
+**exmc rebuilt with :crypto + :binary_backend JIT fix.** The initial
+exmc release was missing `:crypto` in extra_applications and hit JIT
+issues with Nx.BinaryBackend on FreeBSD/aarch64. Fixed by adding
+`:crypto` to the release and pinning BinaryBackend explicitly.
+
+**BinaryBackend numerical stability issues.** Wide priors (e.g.,
+`Normal.new(0, 100)`) cause overflow in BinaryBackend's f64 math
+during NUTS adaptation. Workaround: use conservative parameter scales
+(sigma ~ 1-10). This is a known Nx limitation — EXLA handles it via
+log-space ops, but EXLA requires CUDA (see GPU note below).
+
+**GPU on FreeBSD research: no path forward.** NVIDIA's FreeBSD driver
+supports display but not CUDA compute. No EXLA, no Torchx, no XLA
+backend. The production path for GPU-accelerated sampling is a
+multi-host topology with a Linux GPU node connected via distributed
+Erlang. ZFS send/receive can push model/data datasets to the GPU host.
+
+**Standard jails spec written** (`specs/standard-jails.md`). Defines
+the boundary between Zed's responsibility (jail lifecycle, packages,
+config files, service start, health check, expose connection tuple)
+and app responsibility (migrations, business secrets, connection
+pooling). Covers PostgreSQL, ClickHouse, Cube.dev, RabbitMQ.
+
+**Converge jail executor spec written** (`specs/converge-jail-executor.md`).
+Full gap analysis between what the DSL declares and what the executor
+actually handles today. Documents every `{:ok, :pending}` stub and
+proposes a `setup` block for platform-specific init (initdb, config
+file templates, service enable).
+
+**CDN LiveView JS for zedweb.** Rather than building a full asset
+pipeline (esbuild, tailwind, npm), zedweb loads Phoenix LiveView JS
+and topbar from jsdelivr via ESM `<script type="module">` imports.
+Zero build step, works in thin jails with no Node.js.
+
+**pf rdr working for external access.** Host-level pf rules redirect
+external traffic on ports 4000 (zedweb) and 8080 (Livebook) to the
+respective jail IPs on bastille0. All other jail traffic stays on the
+loopback network.
+
+---
+
 ## What's next
 
 - **S7**: Recording + blog post with the 3-node cluster as the demo.
