@@ -23,3 +23,4 @@ zed-*.tar
 /tmp/
 .claude/settings.local.json
 priv/*.so
+demo-releases/*
