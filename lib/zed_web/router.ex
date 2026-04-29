@@ -26,6 +26,8 @@ defmodule ZedWeb.Router do
     get "/admin/login", AdminController, :new_session
     post "/admin/login", AdminController, :create_session
     post "/admin/logout", AdminController, :delete_session
+
+    live "/cluster", ClusterLive, :index
   end
 
   scope "/admin", ZedWeb do
