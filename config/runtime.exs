@@ -56,6 +56,7 @@ if System.get_env("ZED_SERVE") == "1" do
     [
       secret_key_base: secret_key_base,
       server: true,
+      check_origin: false,
       url: [host: System.get_env("ZED_WEB_HOST") || "localhost", port: port]
     ]
 
