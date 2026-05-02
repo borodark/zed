@@ -146,7 +146,7 @@ The roadmap lives in [`specs/iteration-plan.md`](specs/iteration-plan.md); each 
 | A2b | QR admin first-login | ✅ Done | `Zed.QR` + `Zed.Admin.OTT` (single-use, rate-limited, audit-logged) |
 | A3 | Passkey (WebAuthn) auth | ✅ Done | `wax_`-backed; Chrome desktop + Safari iOS + Chrome Android |
 | A4 | SSH-key challenge auth | ✅ Done | `ssh-keygen -Y sign` flow + login script |
-| A5.1 | Bastille jail adapter | ✅ Done | 540 LOC; live-verified after seven real-world bugs ([blog](https://www.dataalienist.com/blog-lie-at-exit-zero.html)) |
+| A5.1 | Bastille jail adapter | ✅ Done | 540 LOC; live-verified after seven real-world bugs ([blog](http://www.dataalienist.com/blog-lie-at-exit-zero.html)) |
 | A5a | **Privilege boundary** (zedweb / zedops split) | ✅ Done | Two `mix release` targets, Unix-socket transport, `getpeereid(2)` NIF, capability-scoped doas, `host-bring-up.sh` |
 | B0 | `zedz` mobile QR scanner | Planned | Fork of probnik with `zed_admin` payload handler |
 
