@@ -233,4 +233,191 @@ defmodule Zed.IR.ValidateTest do
                    fn -> Validate.run!(ir) end
     end
   end
+
+  describe "cluster validation (S2)" do
+    defp ir_with_cluster(cluster_config) do
+      %Zed.IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [],
+        zones: [],
+        clusters: [
+          %Zed.IR.Node{id: :demo, type: :cluster, config: cluster_config, deps: []}
+        ],
+        snapshot_config: %{}
+      }
+    end
+
+    test "rejects inline cookie string on a cluster" do
+      ir = ir_with_cluster(%{cookie: "literal-cookie", members: []})
+
+      assert_raise Zed.ValidationError,
+                   ~r/cluster :demo has an inline cookie string/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects inline cookie atom on a cluster" do
+      ir = ir_with_cluster(%{cookie: :literal_cookie, members: []})
+
+      assert_raise Zed.ValidationError,
+                   ~r/cluster :demo has an inline cookie atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "accepts {:env, var} cluster cookie" do
+      ir = ir_with_cluster(%{cookie: {:env, "COOKIE"}, members: []})
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+
+    test "accepts {:secret, slot, field} cluster cookie referencing a known slot" do
+      ir = ir_with_cluster(%{cookie: {:secret, :beam_cookie, :value}, members: []})
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+
+    test "rejects unknown slot on cluster cookie" do
+      ir = ir_with_cluster(%{cookie: {:secret, :ghost_cluster_cookie, :value}, members: []})
+
+      assert_raise Zed.ValidationError,
+                   ~r/unknown secret slot :ghost_cluster_cookie/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "accepts well-shaped node atoms" do
+      ir =
+        ir_with_cluster(%{
+          cookie: {:env, "C"},
+          members: [:"web@10.0.0.1", :"worker@host2"]
+        })
+
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+
+    test "rejects member without @ separator" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}, members: [:web]})
+
+      assert_raise Zed.ValidationError,
+                   ~r/member :web is not a valid node atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects non-atom member" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}, members: ["web@host"]})
+
+      assert_raise Zed.ValidationError,
+                   ~r/member "web@host" is not a valid node atom/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "rejects non-list :members" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}, members: :not_a_list})
+
+      assert_raise Zed.ValidationError,
+                   ~r/cluster :demo :members must be a list/,
+                   fn -> Validate.run!(ir) end
+    end
+
+    test "missing :members defaults to empty list (cluster declared but unpopulated)" do
+      ir = ir_with_cluster(%{cookie: {:env, "C"}})
+      assert %Zed.IR{} = Validate.run!(ir)
+    end
+  end
+
+  describe "jail packages validation (S3)" do
+    test "accepts valid packages list" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{packages: ["postgresql16-server"]}}
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "rejects non-list packages" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{packages: "postgresql16-server"}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/packages must be a list/, fn ->
+        Validate.run!(ir)
+      end
+    end
+
+    test "rejects non-string package entry" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{packages: [:postgresql16]}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/packages entry must be a string/, fn ->
+        Validate.run!(ir)
+      end
+    end
+  end
+
+  describe "jail depends_on validation (S3)" do
+    test "accepts depends_on referencing a declared jail" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{}},
+          %Node{id: :myapp, type: :jail, config: %{depends_on: :pg}}
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "accepts depends_on list" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{}},
+          %Node{id: :ch, type: :jail, config: %{}},
+          %Node{id: :plausible, type: :jail, config: %{depends_on: [:pg, :ch]}}
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "rejects depends_on referencing undeclared jail" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :myapp, type: :jail, config: %{depends_on: :ghost_jail}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/depends_on :ghost_jail/, fn ->
+        Validate.run!(ir)
+      end
+    end
+  end
 end

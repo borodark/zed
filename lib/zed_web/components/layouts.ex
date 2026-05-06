@@ -40,6 +40,14 @@ defmodule ZedWeb.Layouts do
       </head>
       <body>
         <%= @inner_content %>
+        <script type="module">
+          import {Socket} from "https://cdn.jsdelivr.net/npm/phoenix@1.7.21/+esm";
+          import {LiveSocket} from "https://cdn.jsdelivr.net/npm/phoenix_live_view@1.1.28/+esm";
+          let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
+          let liveSocket = new LiveSocket("/live", Socket, {params: {_csrf_token: csrfToken}});
+          liveSocket.connect();
+          window.liveSocket = liveSocket;
+        </script>
       </body>
     </html>
     """

@@ -40,7 +40,39 @@ defmodule Zed.Secrets.Catalog do
       fields: [:cert, :key],
       algo: :selfsigned_tls,
       consumers: [:zed_web]
+    },
+    # ------------------------------------------------------------------
+    # Demo-cluster slots (specs/demo-cluster-plan.md). The cluster
+    # cookie is shared by all five BEAM jails so they form one
+    # distributed Erlang topology. The pg/ch admin passwords seed the
+    # database jails before they're handed to the apps that consume
+    # them. Alpaca creds are split into id+secret because Alpaca's API
+    # requires both as separate values; modelling them as one slot with
+    # two fields keeps the rotation atomic.
+    demo_cluster_cookie: %{
+      fields: [:value],
+      algo: :random_256_b64,
+      consumers: [:beam]
+    },
+    pg_admin_passwd: %{
+      fields: [:value],
+      algo: :pbkdf2_sha256,
+      consumers: [:postgres]
+    },
+    ch_admin_passwd: %{
+      fields: [:value],
+      algo: :pbkdf2_sha256,
+      consumers: [:clickhouse]
+    },
+    livebook_passwd: %{
+      fields: [:value],
+      algo: :random_256_b64,
+      consumers: [:livebook]
     }
+    # NB: Alpaca creds aren't a generated slot — they come from the
+    # operator's Alpaca dashboard. Demo passes them via the exmc jail's
+    # env (ALPACA_API_KEY_ID / ALPACA_SECRET_KEY). Adding a slot here
+    # would require a :user_supplied algo we don't have yet.
   }
 
   @implemented_storage [:local_file]

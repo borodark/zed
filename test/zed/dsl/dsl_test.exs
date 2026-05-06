@@ -240,5 +240,174 @@ defmodule Zed.DSLTest do
       assert function_exported?(FuncCheck, :rollback, 1)
       assert function_exported?(FuncCheck, :status, 0)
     end
+
+    test "jail with packages and release" do
+      defmodule PkgJailDeploy do
+        use Zed.DSL
+
+        deploy :pkg_jail, pool: "tank" do
+          dataset "jails/pg" do
+            compression :lz4
+          end
+
+          jail :pg do
+            dataset "jails/pg"
+            ip4 "10.17.89.20/24"
+            release "15.0-RELEASE"
+            packages ["postgresql16-server", "postgresql16-contrib"]
+          end
+        end
+      end
+
+      ir = PkgJailDeploy.__zed_ir__()
+      [jail] = ir.jails
+      assert jail.id == :pg
+      assert jail.config.packages == ["postgresql16-server", "postgresql16-contrib"]
+      assert jail.config.release == "15.0-RELEASE"
+    end
+
+    test "jail with service" do
+      defmodule SvcJailDeploy do
+        use Zed.DSL
+
+        deploy :svc_jail, pool: "tank" do
+          dataset "jails/pg" do
+            compression :lz4
+          end
+
+          jail :pg do
+            dataset "jails/pg"
+            ip4 "10.17.89.20/24"
+            service :postgresql, env: %{"PGDATA" => "/var/db/postgres/16/data"}
+          end
+        end
+      end
+
+      ir = SvcJailDeploy.__zed_ir__()
+      [jail] = ir.jails
+      assert [{:postgresql, opts}] = jail.config.services
+      assert opts.env == %{"PGDATA" => "/var/db/postgres/16/data"}
+    end
+
+    test "jail with nullfs_mount" do
+      defmodule MountJailDeploy do
+        use Zed.DSL
+
+        deploy :mount_jail, pool: "tank" do
+          dataset "jails/zedweb" do
+            compression :lz4
+          end
+
+          jail :zedweb do
+            dataset "jails/zedweb"
+            ip4 "10.17.89.10/24"
+            nullfs_mount "/var/run/zed", into: "/host_run_zed", mode: :ro
+          end
+        end
+      end
+
+      ir = MountJailDeploy.__zed_ir__()
+      [jail] = ir.jails
+      assert [{"/var/run/zed", opts}] = jail.config.mounts
+      assert opts.into == "/host_run_zed"
+      assert opts.mode == :ro
+    end
+
+    test "jail with inline app desugars into top-level app + contains" do
+      defmodule InlineAppJailDeploy do
+        use Zed.DSL
+
+        deploy :inline_app, pool: "tank" do
+          dataset "jails/web" do
+            compression :lz4
+          end
+
+          jail :web do
+            dataset "jails/web"
+            ip4 "10.17.89.10/24"
+            packages ["erlang-runtime27"]
+
+            app :webserver do
+              version "1.0.0"
+              cookie {:env, "COOKIE"}
+              health :http, url: "http://10.17.89.10:4000/health", expect: 200
+            end
+          end
+        end
+      end
+
+      ir = InlineAppJailDeploy.__zed_ir__()
+
+      # Jail gets contains set automatically
+      [jail] = ir.jails
+      assert jail.config.contains == :webserver
+
+      # App is promoted to top-level with jail's dataset
+      [app] = ir.apps
+      assert app.id == :webserver
+      assert app.config.version == "1.0.0"
+      assert app.config.dataset == "jails/web"
+      assert app.config.cookie == {:env, "COOKIE"}
+      assert [{:http, http_opts}] = app.config.health
+      assert http_opts[:url] == "http://10.17.89.10:4000/health"
+    end
+
+    test "jail with depends_on" do
+      defmodule DepsJailDeploy do
+        use Zed.DSL
+
+        deploy :deps_jail, pool: "tank" do
+          dataset "jails/pg" do
+            compression :lz4
+          end
+
+          dataset "jails/app" do
+            compression :lz4
+          end
+
+          jail :pg do
+            dataset "jails/pg"
+            ip4 "10.17.89.20/24"
+          end
+
+          jail :myapp do
+            dataset "jails/app"
+            ip4 "10.17.89.11/24"
+            depends_on :pg
+          end
+        end
+      end
+
+      ir = DepsJailDeploy.__zed_ir__()
+      myapp = Enum.find(ir.jails, &(&1.id == :myapp))
+      assert myapp.config.depends_on == :pg
+    end
+
+    test "jail with dataset mount_in_jail" do
+      defmodule DatasetMountJailDeploy do
+        use Zed.DSL
+
+        deploy :ds_mount, pool: "tank" do
+          dataset "jails/pg" do
+            compression :lz4
+          end
+
+          dataset "data/pg" do
+            compression :lz4
+          end
+
+          jail :pg do
+            dataset "jails/pg"
+            ip4 "10.17.89.20/24"
+            dataset "data/pg", mount_in_jail: "/var/db/postgres"
+          end
+        end
+      end
+
+      ir = DatasetMountJailDeploy.__zed_ir__()
+      [jail] = ir.jails
+      assert [{"data/pg", opts}] = jail.config.datasets
+      assert opts.mount_in_jail == "/var/db/postgres"
+    end
   end
 end

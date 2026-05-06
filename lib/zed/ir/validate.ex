@@ -3,6 +3,18 @@ defmodule Zed.IR.Validate do
   Compile-time validation passes for the deployment IR.
   Catches broken references and invalid configurations before
   anything touches disk.
+
+  ## Checks
+
+    * `check_pool` — pool must be a non-nil string
+    * `check_dataset_refs` — apps reference only declared datasets
+    * `check_jail_contains` — jail `contains` references a declared app
+    * `check_jail_packages` — packages must be a list of binary strings
+    * `check_jail_depends_on` — depends_on entries reference declared jails
+    * `check_no_inline_secrets` — cookies must use {:env,_}, {:file,_}, or {:secret,_}
+    * `check_secret_refs` — secret slots and fields exist in Catalog
+    * `check_cluster_cookies` — same cookie hygiene as apps
+    * `check_cluster_members` — members are valid `:"name@host"` atoms
   """
 
   alias Zed.IR
@@ -13,8 +25,12 @@ defmodule Zed.IR.Validate do
     check_pool(ir)
     check_dataset_refs(ir)
     check_jail_contains(ir)
+    check_jail_packages(ir)
+    check_jail_depends_on(ir)
     check_no_inline_secrets(ir)
     check_secret_refs(ir)
+    check_cluster_cookies(ir)
+    check_cluster_members(ir)
     ir
   end
 
@@ -48,6 +64,46 @@ defmodule Zed.IR.Validate do
         raise Zed.ValidationError,
               "jail #{inspect(jail.id)} contains #{inspect(contained)} which is not a declared app"
       end
+    end)
+  end
+
+  # Jail :packages must be a list of binary strings.
+  defp check_jail_packages(%IR{} = ir) do
+    Enum.each(ir.jails, fn jail ->
+      case jail.config[:packages] do
+        nil -> :ok
+        pkgs when is_list(pkgs) ->
+          Enum.each(pkgs, fn p ->
+            unless is_binary(p) do
+              raise Zed.ValidationError,
+                    "jail #{inspect(jail.id)} :packages entry must be a string, got #{inspect(p)}"
+            end
+          end)
+        other ->
+          raise Zed.ValidationError,
+                "jail #{inspect(jail.id)} :packages must be a list, got #{inspect(other)}"
+      end
+    end)
+  end
+
+  # Jail :depends_on entries must reference declared jail IDs.
+  defp check_jail_depends_on(%IR{} = ir) do
+    known = MapSet.new(Enum.map(ir.jails, & &1.id))
+
+    Enum.each(ir.jails, fn jail ->
+      deps =
+        case jail.config[:depends_on] do
+          nil -> []
+          dep when is_atom(dep) -> [dep]
+          deps when is_list(deps) -> deps
+        end
+
+      Enum.each(deps, fn dep ->
+        unless dep in known do
+          raise Zed.ValidationError,
+                "jail #{inspect(jail.id)} depends_on #{inspect(dep)} which is not a declared jail"
+        end
+      end)
     end)
   end
 
@@ -131,6 +187,73 @@ defmodule Zed.IR.Validate do
     raise Zed.ValidationError,
           "app #{inspect(app_id)} #{inspect(config_key)}: secret field must be an atom, got #{inspect(field)}"
   end
+
+  # Cluster cookies follow the same hygiene rule as app cookies — no
+  # inline strings, no inline atoms. Same set of allowed shapes:
+  # {:env, "VAR"}, {:file, path}, {:secret, slot[, field[, opts]]}.
+  # The {:secret, ...} shape also gets the full Catalog walk via
+  # check_secret_refs_in_clusters/1.
+  defp check_cluster_cookies(%IR{} = ir) do
+    Enum.each(ir.clusters, fn cluster ->
+      cookie = cluster.config[:cookie]
+
+      case cookie do
+        nil -> :ok
+        {:env, _} -> :ok
+        {:file, _} -> :ok
+        {:secret, slot} -> validate_secret_ref!(slot, :value, [], cluster.id, :cookie)
+        {:secret, slot, field} -> validate_secret_ref!(slot, field, [], cluster.id, :cookie)
+        {:secret, slot, field, opts} when is_list(opts) ->
+          validate_secret_ref!(slot, field, opts, cluster.id, :cookie)
+        s when is_binary(s) ->
+          raise Zed.ValidationError,
+                "cluster #{inspect(cluster.id)} has an inline cookie string — use {:env, \"VAR\"}, {:file, path}, or {:secret, :slot} instead"
+        s when is_atom(s) ->
+          raise Zed.ValidationError,
+                "cluster #{inspect(cluster.id)} has an inline cookie atom — use {:env, \"VAR\"}, {:file, path}, or {:secret, :slot} instead"
+        _ -> :ok
+      end
+    end)
+  end
+
+  # Cluster `members` is a list of node atoms shaped `:"name@host"`.
+  # The host part is whatever — IP, dotted FQDN, mDNS, anything BEAM
+  # accepts. We only check the @ separator and that the node name half
+  # is non-empty, because the BEAM itself rejects malformed node names
+  # at start_distribution time and that's the right place for the deep
+  # check. Empty member list is allowed for now (cluster declared but
+  # not yet populated; populated by a later iteration's discovery).
+  defp check_cluster_members(%IR{} = ir) do
+    Enum.each(ir.clusters, fn cluster ->
+      members = cluster.config[:members] || []
+
+      cond do
+        not is_list(members) ->
+          raise Zed.ValidationError,
+                "cluster #{inspect(cluster.id)} :members must be a list, got #{inspect(members)}"
+
+        true ->
+          Enum.each(members, fn m ->
+            unless valid_node_atom?(m) do
+              raise Zed.ValidationError,
+                    "cluster #{inspect(cluster.id)} member #{inspect(m)} is not a valid node atom (expected :\"name@host\")"
+            end
+          end)
+      end
+    end)
+  end
+
+  defp valid_node_atom?(m) when is_atom(m) do
+    m
+    |> Atom.to_string()
+    |> String.split("@", parts: 2)
+    |> case do
+      [name, host] when name != "" and host != "" -> true
+      _ -> false
+    end
+  end
+
+  defp valid_node_atom?(_), do: false
 
   defp check_storage_mode!(mode, slot, app_id, config_key) do
     cond do
