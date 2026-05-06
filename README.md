@@ -146,7 +146,7 @@ The roadmap lives in [`specs/iteration-plan.md`](specs/iteration-plan.md); each 
 | A2b | QR admin first-login | ✅ Done | `Zed.QR` + `Zed.Admin.OTT` (single-use, rate-limited, audit-logged) |
 | A3 | Passkey (WebAuthn) auth | ✅ Done | `wax_`-backed; Chrome desktop + Safari iOS + Chrome Android |
 | A4 | SSH-key challenge auth | ✅ Done | `ssh-keygen -Y sign` flow + login script |
-| A5.1 | Bastille jail adapter | ✅ Done | 540 LOC; live-verified after seven real-world bugs ([blog](https://www.dataalienist.com/blog-lie-at-exit-zero.html)) |
+| A5.1 | Bastille jail adapter | ✅ Done | 540 LOC; live-verified after seven real-world bugs ([blog](http://www.dataalienist.com/blog-lie-at-exit-zero.html)) |
 | A5a | **Privilege boundary** (zedweb / zedops split) | ✅ Done | Two `mix release` targets, Unix-socket transport, `getpeereid(2)` NIF, capability-scoped doas, `host-bring-up.sh` |
 | B0 | `zedz` mobile QR scanner | Planned | Fork of probnik with `zed_admin` payload handler |
 
@@ -195,6 +195,19 @@ After A5a:
 **Project meta**
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 - [CLAUDE.md](CLAUDE.md) — project context and architecture
+
+## Integration with `nx_vulkan`
+
+Zed and [`nx_vulkan`](../nx_vulkan/) are sibling repos, not coupled at the Mix dependency level. The deployment pattern:
+
+1. Zed orchestrates BEAM nodes (start, supervise, health-check, rollback).
+2. Each node's own `mix.exs` lists `nx_vulkan` (and `exmc`, etc.) as Hex deps — zed doesn't import `nx_vulkan` itself.
+3. The deployed application's supervisor starts `Nx.Vulkan.Node` (the long-lived GPU-node GenServer) under its own tree.
+4. Zed treats it identically to any other OTP application — deploys it, supervises it, doesn't need to know about Vulkan APIs.
+
+Practical compatibility holds today: both pin OTP 27 / Elixir 1.18, share the NAS git server, and have no conflicting global state. See [`specs/nx-vulkan-execution.md`](specs/nx-vulkan-execution.md) for the full integration story (and the historical execution plan).
+
+Open coordination work (Phase 3 of `nx_vulkan/PLAN_GPU_NODE.md`): both projects plan to use `mdns_lite` for service discovery. Once the multi-client GPU node lands, the two need to agree on service-name conventions (`_zed._tcp.local` vs `_exmc_gpu._tcp.local`) so they don't collide on the local-link advertisement bus.
 
 ## Status
 

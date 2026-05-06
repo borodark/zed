@@ -6,7 +6,7 @@ defmodule ZedWeb.Endpoint do
     key: "_zed_session",
     signing_salt: "zed-session-salt",
     same_site: "Lax",
-    secure: true,
+    secure: false,
     http_only: true,
     # 8h rolling — session cookie expires when browser closes, but the
     # plug-signed content carries an inner max-age.
@@ -14,7 +14,7 @@ defmodule ZedWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]]
+    websocket: [connect_info: [session: @session_options], check_origin: false]
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]

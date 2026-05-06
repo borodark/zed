@@ -520,6 +520,20 @@ defmodule Zed.Bootstrap do
     {fp, {:tls_selfsigned, :cert_fingerprint, fp}}
   end
 
+  # Generic value slot (demo_cluster_cookie, livebook_passwd, etc.)
+  # — catch-all for any slot whose Generate output is a plain binary.
+  defp store_material(_slot, bytes, path) when is_binary(bytes) do
+    Store.write_value(path, bytes)
+    {Store.fingerprint(bytes), {:value, :stored}}
+  end
+
+  # Generic password slot (pg_admin_passwd, ch_admin_passwd, etc.)
+  # — catch-all for any slot whose Generate output is a %{plaintext, hash} map.
+  defp store_material(_slot, %{plaintext: pw, hash: hash}, path) do
+    Store.write_value(path, hash)
+    {Store.fingerprint(hash), {:password, :plaintext_once, pw}}
+  end
+
   @doc """
   sha256 of the DER-encoded certificate inside a PEM binary.
 

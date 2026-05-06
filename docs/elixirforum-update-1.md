@@ -22,7 +22,7 @@ When I asked the forum about the two design forks (age-encrypted files vs ZFS us
 
 **A4 — SSH-key challenge.** For operators who carry `ssh-ed25519` muscle memory but no passkey. Pubkey gets pasted in once (`authorized_keys` format, auditable with stock tools). Login is `POST /admin/ssh/challenge` → sign with `ssh-keygen -Y sign` → `POST /admin/ssh/response` → session cookie. Verification uses `:public_key.verify/4` from OTP — no extra dep. There's a 50-line shell script that does the whole flow and drops a cookie file for `curl --cookie`. Unblocks scripts.
 
-**A5 — Bastille jail backend (this is the one that nearly broke me).** Adapter to FreeBSD's Bastille (1048-star pure-shell jail manager, BSD-licensed). 540 lines of Elixir, 79-line Runner behaviour, 64-line Mock for unit tests. 175 mocked unit tests passed cleanly on the laptop. The first live run on a real FreeBSD 15.0 Mac Pro found seven distinct production bugs in sequence. Long-form retro here: <https://www.dataalienist.com/blog-lie-at-exit-zero.html>.
+**A5 — Bastille jail backend (this is the one that nearly broke me).** Adapter to FreeBSD's Bastille (1048-star pure-shell jail manager, BSD-licensed). 540 lines of Elixir, 79-line Runner behaviour, 64-line Mock for unit tests. 175 mocked unit tests passed cleanly on the laptop. The first live run on a real FreeBSD 15.0 Mac Pro found seven distinct production bugs in sequence. Long-form retro here: <http://www.dataalienist.com/blog-lie-at-exit-zero.html>.
 
 The summary version: `bastille destroy -f` exits 0 even when it does nothing (running jail, no `-a`). The mock said the destroy worked. The system kept running. Every other failure was a shape of the same lesson — adapters exist precisely to convert soft contracts into hard ones, and the post-condition check is the only thing that catches a tool that lies on the way out. Final state on the Mac Pro: 5/0 live integration tests, merged to main as `daea21a`.
 
@@ -47,5 +47,5 @@ Thanks to everyone in the original thread — particularly the people who pushed
 ---
 
 *Repo: <https://github.com/octanix/zed> (private during MVP; will open up once A5a lands).*
-*Blog: <https://www.dataalienist.com/blog-lie-at-exit-zero.html>.*
+*Blog: <http://www.dataalienist.com/blog-lie-at-exit-zero.html>.*
 *Specs: `specs/iteration-plan.md`, `specs/a5-bastille-plan.md`, `specs/a5a-privilege-boundary.md`, `docs/SECRETS_DESIGN.md`.*
