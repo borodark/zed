@@ -80,9 +80,30 @@ Zed.Cluster.converge_all(ir)
 Zed.Cluster.converge_coordinated(ir)
 ```
 
-## Future: GPU Cluster
+## GPU node abstraction — current progress
 
-ZFS + Erlang distribution = distributed ML without MLflow/DVC/K8s.
+The vision below is intact. The infrastructure for the *runtime side*
+(driving the GPU from BEAM) shipped in May 2026 in the sibling
+[`nx_vulkan`](../nx_vulkan/) repository; the *deploy side* (zed's
+declarative DSL for GPU clusters) is still on the roadmap — see "Road
+to Production" below.
+
+### What shipped (in `nx_vulkan@main`, May 2026)
+
+| Capability | Where | Status |
+|---|---|---|
+| Vulkan compute backend (no CUDA, no Metal) | `nx_vulkan/lib/nx_vulkan/native.ex` + spirit | ✅ Cross-platform validated on Linux RTX 3060 Ti + FreeBSD GT 750M + GT 650M (178/178 tests) |
+| Long-lived per-machine GPU node GenServer | `Nx.Vulkan.Node` + `with_node/2` | ✅ |
+| Persistent `vkPipelineCache` (disk, header-validated) | `Nx.Vulkan.PipelineCache` | ✅ 4× cold-start speedup |
+| Runtime shader synthesis from per-family spec | `Nx.Vulkan.Synthesis` + `ShaderTemplate` | ✅ <200 ms cold path; 6 hand-written + 3 synthesized chain shader families |
+| MCMC integration (NUTS leapfrog, persistent buffers, EXLA fallback) | `pymc/exmc@main` `Exmc.NUTS.Vulkan.*` | ✅ |
+| Per-shader suspect tracking (W6 Phase 1) | `Exmc.NUTS.Vulkan.SuspectTracker` | ✅ Eviction policy + cross-shader sliding window |
+
+### What zed needs to add (deploy side)
+
+The runtime substrate exists. Turning it into the declarative
+`deploy :gpu_cluster` block below requires zed-specific work that
+hasn't started yet:
 
 ```elixir
 deploy :gpu_cluster, pool: "tank" do
@@ -102,15 +123,135 @@ deploy :gpu_cluster, pool: "tank" do
 end
 ```
 
+The mapping from `nx_vulkan`'s capabilities into a zed deploy spec is:
+
+| Vision DSL block | What zed must build | Estimated effort |
+|---|---|---|
+| `node :workstation do gpu ... end` | Inventory primitive that calls `nvidia-smi` / `pciconf` to enumerate GPU(s); reflect into ZFS properties (`com.zed:gpu.vendor`, `com.zed:gpu.vram_mb`) on the host. | 1 week |
+| `model :llama70b do requires vram: 48 end` | Scheduler that matches model VRAM requirements against host `com.zed:gpu.vram_mb`. Refuses to deploy if no host has enough VRAM. Pure Elixir, no new infrastructure. | 1 week |
+| `model do dataset "models/..." end` | Already covered by zed's existing dataset primitive — model files are just ZFS datasets. Zero new code. | 0 |
+| `job :finetune do checkpoint_every "1 epoch" end` | Hooks into a training loop callback. Triggers `zfs snapshot dataset@epoch-N`. Probably a behavior the user-app implements; zed provides the snapshot primitive (already exists). | 1 week |
+| GPU node lifecycle (start `Nx.Vulkan.Node` under app supervisor, restart on driver crash, persist cache on shutdown) | Agent verb that reads `com.zed:gpu.driver` and starts the right OTP application. Standard zed agent pattern. | 1 week |
+| mDNS service discovery (`_exmc_gpu._tcp.local`) | Coordinate with `nx_vulkan` Phase 3 work — both projects plan to use `mdns_lite`. Need a service-name convention. | 2-3 weeks (joint with nx_vulkan) |
+
 ```
 Model versioning?    zfs snapshot
 Model distribution?  zfs send/receive
 Experiment tracking? ZFS properties (com.zed:loss=0.0023)
 Checkpoint/resume?   Snapshots travel to any node
 Rollback bad run?    zfs rollback (O(1))
+GPU dispatch?        Nx.Vulkan.Node.with_node/2  ← shipped
+Per-host inventory?  zed agent reads PCIe + /dev/nvidia*  ← TODO
 ```
 
-See [docs/gpu-cluster.md](docs/gpu-cluster.md) for the full vision.
+See [docs/gpu-cluster.md](docs/gpu-cluster.md) for the original vision.
+
+## Road to Production
+
+Honest assessment of what's missing before zed should be trusted with
+production workloads. Categorized by risk to a deployment, not by
+chronological order. Each line is a real deficit, not a polish item.
+
+### P0 — must fix before anyone runs zed in prod
+
+- [ ] **Convergence engine end-to-end on a real deploy.** A1-A5a are
+      individual layers; the *combined* `Module.converge()` on a
+      multi-host deploy with ZFS + Bastille + cluster has been
+      live-tested only on the dev machines, not on a clean prod-shaped
+      target. **Effort: 1-2 weeks live-burn.**
+- [ ] **Health checks wired to convergence.** `app :foo do health
+      :http, url: "..." end` exists in the spec; the executor does not
+      yet wait on health checks before declaring success. Critical:
+      without this, a "successful" deploy can leave the app crashed.
+      **Effort: 1 week.**
+- [ ] **Rollback under partial failure.** If a multi-host deploy
+      succeeds on hosts A+B and fails on C, `Zed.Cluster.converge_coordinated`
+      is supposed to roll all three back. The path exists but hasn't
+      been chaos-tested under realistic failure modes (network
+      partition during apply, ZFS pool full, jail.conf syntax error
+      mid-apply). **Effort: 2 weeks chaos-test + harden.**
+- [ ] **Secrets at rest.** A1 produces encrypted `<base>/zed/secrets`
+      with fingerprint-stamped properties. The pipeline that gets
+      secrets *into* the deploying app's env is partly designed
+      ([`docs/SECRETS_DESIGN.md`](docs/SECRETS_DESIGN.md)) but not
+      fully shipped — current deploys rely on env files placed by the
+      operator. **Effort: 2 weeks to ship the agent-side decrypt path.**
+- [ ] **Erlang-distribution security**. Cluster RPC currently uses
+      cookie auth + Unix sockets between zedweb/zedops. Production
+      deployments need either TLS distribution or a hardened
+      `epmd_proxy`. The `getpeereid` NIF covers local IPC; cross-host
+      cookies on the open network do not. **Effort: 1 week.**
+
+### P1 — should fix before scaling beyond a single operator
+
+- [ ] **No CI/CD integration.** No GitHub Actions / Forgejo / etc.
+      runner that runs `mix test` + `mix test --include zfs_live` on
+      every push. Currently the only verification is the operator
+      running the live tests by hand. **Effort: 2 days.**
+- [ ] **No telemetry / observability beyond log files.** No
+      `:telemetry` events on convergence steps, no Prometheus/StatsD
+      hooks. `LiveDashboard` is wired in zedweb but the converger
+      itself is opaque. **Effort: 1 week.**
+- [ ] **No upgrade strategies.** A `Module.converge()` either replaces
+      a service entirely or doesn't. No rolling upgrade, no
+      blue-green, no canary. For a small fleet (<10 hosts) this is
+      fine; beyond that an operator wants finer control. **Effort: 2-3
+      weeks for rolling; another 2 for blue-green.**
+- [ ] **DSL coverage is shallow.** The DSL handles `dataset`, `app`,
+      `jail`, `snapshots`. It doesn't handle: nested deploys,
+      conditional resources (`if env == :prod`), resource hooks
+      (`before_deploy`, `after_deploy`), depends_on graphs. Current
+      workaround is multiple deploy modules. **Effort: 1 week per
+      hook, 2-3 weeks for the dependency graph.**
+- [ ] **No supported-version policy.** OTP 26+ / Elixir 1.17+ is the
+      stated minimum, but the live-test rig pins OTP 27 + Elixir 1.18
+      and there's no LTS commitment. Production needs a written
+      promise about what zed will and won't break across point
+      releases. **Effort: 1 day to write the policy.**
+
+### P2 — nice to have, not blockers for first prod use
+
+- [ ] **mDNS discovery for multi-host deploys.** Currently `Zed.Cluster.connect`
+      takes an explicit node name. mDNS would auto-discover. Coordinated
+      with `nx_vulkan` Phase 3 (see "GPU node abstraction" above).
+      **Effort: 2-3 weeks joint.**
+- [ ] **Web UI for non-Erlang operators.** The Phoenix LiveView admin
+      foundation (A2a/A2b/A3/A4) ships; the actual *deploy* UI on top
+      of it (form for editing `Module.converge` parameters,
+      visual diff before apply) doesn't yet. The `zed` command-line is
+      the only deploy interface today. **Effort: 3-4 weeks.**
+- [ ] **No security review.** No external audit; no fuzz testing of
+      the DSL parser; no formal threat model for the Bastille adapter
+      privilege boundary. The `getpeereid` boundary is small and
+      reviewable, but no one outside the dev team has reviewed it.
+      **Effort: 1-2 weeks for an internal pen-test sprint; budget
+      $5-15K for an external audit.**
+- [ ] **Documentation gap for non-FreeBSD users.** README claims
+      "FreeBSD or illumos (Linux for dev/test only)". A user wanting to
+      try zed on Ubuntu currently has no guidance — the dev-loop docs
+      assume FreeBSD primitives (Bastille, ZFS-on-root, doas).
+      **Effort: 1 week to write a Linux quickstart.**
+- [ ] **Larger test fleet.** Current dev runs on two FreeBSD Macs +
+      one Linux box. Production validation needs ≥5 hosts, mixed
+      hardware, real network failures. The Spirit project's CI ran on
+      a 12-node cluster; zed has nothing comparable yet. **Effort: 1-2
+      months including hardware acquisition.**
+
+### What zed *won't* do (deliberate scope discipline)
+
+- ❌ **Linux as a first-class deployment target.** Linux is supported
+      for dev/test only. ZFS-on-Linux works but isn't the design center.
+- ❌ **Container orchestration.** Kubernetes / Docker / Podman are out
+      of scope. Zed deploys mix releases into FreeBSD jails or illumos
+      zones. Containers exist; this isn't them.
+- ❌ **Single-host high availability.** Zed is per-host authoritative.
+      For HA you run multiple hosts and let zed coordinate — but each
+      host is its own root of trust. Quorum protocols (Raft, Paxos)
+      are not on the roadmap.
+- ❌ **Cross-cloud abstraction.** No AWS / GCP / Azure terraform-style
+      provider layer. Zed manages BEAM applications on hosts you
+      already have. How those hosts came into existence is your
+      problem.
 
 ## Installation
 
