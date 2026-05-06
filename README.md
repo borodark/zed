@@ -84,7 +84,7 @@ Zed.Cluster.converge_coordinated(ir)
 
 The vision below is intact. The infrastructure for the *runtime side*
 (driving the GPU from BEAM) shipped in May 2026 in the sibling
-[`nx_vulkan`](../nx_vulkan/) repository; the *deploy side* (zed's
+[`nx_vulkan`](https://github.com/borodark/nx_vulkan) repository; the *deploy side* (zed's
 declarative DSL for GPU clusters) is still on the roadmap — see "Road
 to Production" below.
 
@@ -339,7 +339,7 @@ After A5a:
 
 ## Integration with `nx_vulkan`
 
-Zed and [`nx_vulkan`](../nx_vulkan/) are sibling repos, not coupled at the Mix dependency level. The deployment pattern:
+Zed and [`nx_vulkan`](https://github.com/borodark/nx_vulkan) are sibling repos, not coupled at the Mix dependency level. The deployment pattern:
 
 1. Zed orchestrates BEAM nodes (start, supervise, health-check, rollback).
 2. Each node's own `mix.exs` lists `nx_vulkan` (and `exmc`, etc.) as Hex deps — zed doesn't import `nx_vulkan` itself.
