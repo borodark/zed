@@ -290,3 +290,119 @@ Both machines push to `192.168.0.33:/mnt/jeff/home/git/repos/nx_vulkan.git`.
 3. Same test against lavapipe (software renderer)
 
 Want me to start with item 2+3 — create the repo and extract the Vulkan context from Spirit?
+
+---
+
+## Phase 2 status update (2026-05-06)
+
+Updated retroactively to reflect the actual state of `nx_vulkan` after
+the gpu-node + Phase 2 architectural work. The original execution
+plan above is preserved as the historical record; this section
+supersedes any "to be created" language.
+
+### What's shipped in `nx_vulkan` (the repo now exists at `~/projects/learn_erl/nx_vulkan/`)
+
+The plan's Phases 1-7 are all closed. Beyond that, the gpu-node arc
+added a layered architecture that the original spec didn't anticipate:
+
+```
+                     ┌─────────────────────────────────────────────┐
+                     │  Nx.Vulkan.Node     (named GenServer)        │
+                     │  • with_node/2 — generic serialized dispatch │
+                     │  • watchdog timeout → {:error, :node_*}      │
+                     │  • lifecycle owns the pipeline cache         │
+                     └──────────────┬──────────────────────────────┘
+                                    │
+        ┌───────────────────────────┴───────────────────────────┐
+        │                                                       │
+┌───────▼──────────┐  ┌────────────────────┐  ┌─────────────────▼────┐
+│ Nx.Vulkan.       │  │ Nx.Vulkan.         │  │ Nx.Vulkan.            │
+│   PipelineCache  │  │   Synthesis +      │  │   ChainShaderSpecs    │
+│   (vkPipeline-   │  │   ShaderTemplate   │  │   (Beta/Gamma/        │
+│    Cache disk    │  │   (runtime GLSL +  │  │    Lognormal +        │
+│    persistence)  │  │    glslangValidator│  │    6 hand-written)    │
+└──────────────────┘  └────────────────────┘  └───────────────────────┘
+                                    │
+                              ┌─────▼──────┐
+                              │  spirit    │
+                              │  vendored  │
+                              │  Vulkan    │
+                              │  backend   │
+                              └────────────┘
+```
+
+### Consumer surface
+
+A consumer that wants the GPU node calls:
+
+```elixir
+# Once at app start (or under a supervisor):
+{:ok, _} = Nx.Vulkan.Node.start_link()
+
+# Per-dispatch (any client — exmc, smc_ex, custom):
+result =
+  Nx.Vulkan.Node.with_node(fn ->
+    # Whatever GPU work needs to share the pipeline cache + buffer
+    # state. The function runs serialized through the node's
+    # GenServer process.
+    Nx.Vulkan.Native.leapfrog_chain_synth(q_ref, p_ref, m_ref, push, k, spv_path)
+  end)
+
+case result do
+  {:error, :node_timeout} -> exla_fallback()
+  {:error, :node_dead} -> exla_fallback()
+  ok_result -> ok_result
+end
+```
+
+### Where zed plugs in
+
+`zed` and `nx_vulkan` are **sibling repos**, not coupled at the Mix
+dependency level. The deployment pattern is:
+
+1. `zed` orchestrates BEAM nodes (start, stop, health-check, supervisor).
+2. The BEAM nodes' own `mix.exs` lists `nx_vulkan` (and `exmc`, etc.)
+   as Hex deps.
+3. Each node loads `nx_vulkan` at boot; the application supervisor
+   starts `Nx.Vulkan.Node`; the rest of the stack uses
+   `with_node/2` for any GPU work.
+4. `zed` doesn't need to know about Vulkan APIs at all — it deploys
+   processes, supervises them, and the Vulkan-using ones come up
+   under their own supervisors.
+
+### What zed's specs originally proposed vs what shipped
+
+| Item | Original plan | Actual |
+|------|---------------|--------|
+| Repo location | "directory under zed, extract later" | Standalone at `~/projects/learn_erl/nx_vulkan/`, vendor-published. |
+| Single NIF | "`nx_vulkan_nif.c`" | Multiple NIFs through `c_src/nx_vulkan_shim.h`, dispatched via Rust `lib.rs`. |
+| Parametric SPIR-V | "Single shader for many ops" | 9 hand-written chain shaders + runtime-templated synthesis for new families. |
+| Defn JIT integration | "Command buffer batching" | Persistent buffer + batched IO at the dispatch level (R3 result on Linux NVIDIA). |
+| Phase 7 milestone (week 7) | "exmc integration: NUTS sampling on GPU, matches BinaryBackend" | Shipped — see `pymc/exmc@feat/gpu-node` (now merged to main). |
+
+### Open work that affects zed
+
+- **W6 Phase 2** — driver-level dispatch cancellation (vkResetCommandPool,
+  vkQueueWaitIdle). Only matters for `zed` if zed's supervisor strategy
+  needs to recover from a hung GPU dispatch by restarting the GPU node.
+  Currently the `Nx.Vulkan.Node`'s in-flight dispatch is uncancellable;
+  the Phase 0 watchdog returns the caller to EXLA fallback but the
+  GenServer process stays blocked until the driver returns.
+- **Phase 3 of `PLAN_GPU_NODE.md`** — multi-client + protocol via
+  `mdns_lite` discovery. Once shipped, `zed`'s mDNS layer (also planned
+  with `mdns_lite`) and `nx_vulkan`'s GPU-node discovery can share the
+  same advertisement infrastructure. Coordinate on service-name
+  conventions (`_zed._tcp.local` vs `_exmc_gpu._tcp.local`).
+- **Beta/Gamma adaptation tuning** (`nx_vulkan/research/gpu_node/beta_gamma_adaptation.md`)
+  — pure exmc concern; doesn't touch zed.
+
+### Practical compatibility check
+
+`zed` and `nx_vulkan` are operationally compatible *today*:
+
+- Both pin OTP 27 / Elixir 1.18.
+- Both push to the same NAS git server.
+- A BEAM node deployed via zed that imports `nx_vulkan` boots the
+  Vulkan context per-node via `Nx.Vulkan.init/0`.
+- No conflicting global state — `Nx.Vulkan.Node` registers under a
+  named atom (`Nx.Vulkan.Node`), zed's services have their own names.
