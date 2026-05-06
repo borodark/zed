@@ -196,6 +196,19 @@ After A5a:
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 - [CLAUDE.md](CLAUDE.md) — project context and architecture
 
+## Integration with `nx_vulkan`
+
+Zed and [`nx_vulkan`](../nx_vulkan/) are sibling repos, not coupled at the Mix dependency level. The deployment pattern:
+
+1. Zed orchestrates BEAM nodes (start, supervise, health-check, rollback).
+2. Each node's own `mix.exs` lists `nx_vulkan` (and `exmc`, etc.) as Hex deps — zed doesn't import `nx_vulkan` itself.
+3. The deployed application's supervisor starts `Nx.Vulkan.Node` (the long-lived GPU-node GenServer) under its own tree.
+4. Zed treats it identically to any other OTP application — deploys it, supervises it, doesn't need to know about Vulkan APIs.
+
+Practical compatibility holds today: both pin OTP 27 / Elixir 1.18, share the NAS git server, and have no conflicting global state. See [`specs/nx-vulkan-execution.md`](specs/nx-vulkan-execution.md) for the full integration story (and the historical execution plan).
+
+Open coordination work (Phase 3 of `nx_vulkan/PLAN_GPU_NODE.md`): both projects plan to use `mdns_lite` for service discovery. Once the multi-client GPU node lands, the two need to agree on service-name conventions (`_zed._tcp.local` vs `_exmc_gpu._tcp.local`) so they don't collide on the local-link advertisement bus.
+
 ## Status
 
 Pre-1.0, design-iterating, single-maintainer. The iteration plan is being walked one layer at a time with live FreeBSD verification after each landed merge. Issues / PRs are welcome but expect short discussion before sizable changes — the design surface is still being negotiated.
