@@ -83,3 +83,22 @@ Manual cleanup required after any multi-host failure.
 | R3 | ✓ | Single-host converge + snapshot |
 | R4 | ✓ | Two-host converge via RPC |
 | R5 | **P0 bug** | No coordinated rollback on partial failure |
+
+## Phase R5 — Re-test (P0 fix confirmed) ✓
+
+After implementing the TLA+-verified 2-phase protocol:
+
+| Host | Dataset | Action | Converge | Rollback | Post-state |
+|------|---------|--------|----------|----------|------------|
+| mac-248 | chaos-good | **create** | ✓ created | **zfs destroy** | **GONE** ✓ |
+| mac-247 | chaos-bad | create | ✗ failed (quota) | skip | never existed |
+
+Protocol trace:
+1. Prepare: both datasets absent → marked as `action: :create`
+2. Converge: mac-248 succeeds, mac-247 fails (quota 1K)
+3. Rollback: mac-248's `chaos-good` destroyed (create rollback)
+
+`NoPartialState` invariant holds: no dataset survives a failed
+coordinated converge. The P0 bug from the original R5 is fixed.
+
+TLA+ spec: 172 states, 124 distinct, 0 errors (v2 with create/modify).
