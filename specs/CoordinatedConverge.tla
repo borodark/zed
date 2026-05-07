@@ -143,6 +143,7 @@ Next ==
     \/ \E h \in Hosts : RollbackHost(h)
     \/ \E h \in Hosts : SkipFailedHost(h)
     \/ AllRolledBack
+    \/ (phase \in {"done", "failed"} /\ UNCHANGED vars)  \* terminal stuttering
 
 \* -----------------------------------------------------------------------
 \* Safety: No Partial State
