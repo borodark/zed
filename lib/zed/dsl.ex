@@ -72,6 +72,8 @@ defmodule Zed.DSL do
       Module.put_attribute(__MODULE__, :zed_deploy_name, nil)
       Module.put_attribute(__MODULE__, :zed_pool, nil)
       Module.put_attribute(__MODULE__, :zed_snapshot_config, %{before_deploy: false, keep: 5})
+      Module.register_attribute(__MODULE__, :zed_hosts, accumulate: true)
+      Module.put_attribute(__MODULE__, :zed_current_host, nil)
 
       @before_compile Zed.DSL
     end
@@ -85,7 +87,7 @@ defmodule Zed.DSL do
       @zed_pool unquote(pool)
 
       import Zed.DSL,
-        only: [dataset: 2, app: 2, jail: 2, zone: 2, snapshots: 1, cluster: 2]
+        only: [dataset: 2, app: 2, jail: 2, zone: 2, snapshots: 1, cluster: 2, host: 3]
 
       unquote(block)
     end
@@ -97,7 +99,15 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      @zed_datasets {unquote(path), unquote(Macro.escape(config))}
+      config = unquote(Macro.escape(config))
+
+      config =
+        case @zed_current_host do
+          {host_name, _node, _pool} -> Map.put(config, :__host__, host_name)
+          nil -> config
+        end
+
+      @zed_datasets {unquote(path), config}
     end
   end
 
@@ -133,6 +143,38 @@ defmodule Zed.DSL do
     end
   end
 
+  @doc """
+  Scope datasets and apps to a specific host node.
+
+  ## Example
+
+      host :web_server, node: :"app@192.168.0.1" do
+        dataset "apps/web" do
+          mountpoint :none
+        end
+      end
+  """
+  defmacro host(name, opts, do: block) do
+    node = Keyword.fetch!(opts, :node)
+    pool = Keyword.get(opts, :pool)
+
+    quote do
+      @zed_current_host {unquote(name), unquote(node), unquote(pool)}
+      unquote(block)
+      @zed_hosts {unquote(name), %{
+        node: unquote(node),
+        pool: unquote(pool),
+        datasets: Enum.filter(@zed_datasets, fn {_path, config} ->
+          Map.get(config, :__host__) == unquote(name)
+        end),
+        apps: Enum.filter(@zed_apps, fn {_name, config} ->
+          Map.get(config, :__host__) == unquote(name)
+        end)
+      }}
+      @zed_current_host nil
+    end
+  end
+
   defmacro cluster(name, do: block) do
     config = parse_kv_block(block)
 
@@ -149,6 +191,7 @@ defmodule Zed.DSL do
     jails = Module.get_attribute(env.module, :zed_jails) |> Enum.reverse()
     zones = Module.get_attribute(env.module, :zed_zones) |> Enum.reverse()
     clusters = Module.get_attribute(env.module, :zed_clusters) |> Enum.reverse()
+    hosts = Module.get_attribute(env.module, :zed_hosts) |> Enum.reverse()
     deploy_name = Module.get_attribute(env.module, :zed_deploy_name)
     pool = Module.get_attribute(env.module, :zed_pool)
     snapshot_config = Module.get_attribute(env.module, :zed_snapshot_config)
@@ -164,10 +207,14 @@ defmodule Zed.DSL do
     Zed.IR.Validate.run!(ir)
 
     escaped_ir = Macro.escape(ir)
+    escaped_hosts = Macro.escape(hosts)
 
     quote do
       @doc "Returns the deployment IR for this module."
       def __zed_ir__, do: unquote(escaped_ir)
+
+      @doc "Returns the host declarations for multi-host deploys."
+      def __zed_hosts__, do: unquote(escaped_hosts)
 
       @doc "Run the full convergence loop: diff → plan → apply → verify."
       def converge(opts \\ []) do
@@ -187,6 +234,45 @@ defmodule Zed.DSL do
       @doc "Read current deployment state from ZFS properties."
       def status do
         Zed.State.read(__zed_ir__())
+      end
+
+      @doc """
+      Run coordinated convergence across all declared hosts.
+
+      Each host gets its own IR (scoped datasets + pool). If any host
+      fails, all successful hosts are rolled back.
+      """
+      def converge_coordinated(opts \\ []) do
+        hosts = __zed_hosts__()
+
+        if hosts == [] do
+          # No host declarations — single-host converge
+          converge(opts)
+        else
+          base_ir = __zed_ir__()
+
+          host_irs =
+            Enum.map(hosts, fn {host_name, host_config} ->
+              pool = host_config.pool || base_ir.pool
+
+              # Build a per-host IR with only that host's datasets
+              host_datasets =
+                host_config.datasets
+                |> Enum.map(fn {path, config} ->
+                  config = Map.delete(config, :__host__)
+                  %Zed.IR.Node{id: path, type: :dataset, config: config}
+                end)
+
+              host_ir = %{base_ir |
+                pool: pool,
+                datasets: host_datasets
+              }
+
+              {host_name, host_config.node, host_ir}
+            end)
+
+          Zed.Cluster.converge_coordinated(base_ir, Keyword.put(opts, :host_irs, host_irs))
+        end
       end
     end
   end
