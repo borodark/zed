@@ -1,12 +1,11 @@
 --------------------------- MODULE CoordinatedConverge ---------------------------
 \* TLA+ specification for Zed's multi-host coordinated convergence protocol.
 \*
-\* Models the P0 bug found in the dual-Mac runbook (R5): when host B fails
-\* mid-converge, host A's successful changes are NOT rolled back. The spec
-\* defines the correct 2-phase protocol and proves no execution ordering
-\* can leave partial state.
+\* v2: models both CREATE (dataset absent → created) and MODIFY (dataset
+\* exists → snapshotted → modified) paths. Rollback is zfs-rollback for
+\* modified datasets, zfs-destroy for created datasets.
 \*
-\* To check: tlc CoordinatedConverge.tla
+\* To check: java -jar tla2tools.jar -config CoordinatedConverge.cfg CoordinatedConverge.tla
 \* Invariant: NoPartialState
 \* Liveness: ConvergenceTerminates
 
@@ -14,81 +13,95 @@ EXTENDS Naturals, FiniteSets, Sequences
 
 CONSTANTS
     Hosts,          \* set of host names, e.g. {"mac_248", "mac_247"}
-    MaxRetries      \* max rollback retries before giving up (bound for model checking)
+    MaxRetries      \* max rollback retries before giving up (bound)
 
 VARIABLES
-    phase,          \* global protocol phase: "idle" | "snapshot" | "converge" | "verify" | "rollback" | "done" | "failed"
-    hostState,      \* function: host -> "clean" | "snapshotted" | "converged" | "verified" | "rolled_back" | "failed"
-    hostSnapshot,   \* function: host -> snapshot name or ""
-    convergeResult, \* function: host -> "ok" | "error" | "pending"
-    rollbackCount   \* number of rollback attempts (bounded for model checking)
+    phase,          \* "idle" | "prepare" | "converge" | "verify" | "rollback" | "done" | "failed"
+    hostState,      \* host -> "absent" | "clean" | "prepared" | "converged" | "verified" | "rolled_back" | "failed"
+    hostSnapshot,   \* host -> "pre-converge" | "none" | ""
+    convergeResult, \* host -> "ok" | "error" | "pending"
+    convergeAction, \* host -> "create" | "modify" — determined during prepare
+    rollbackCount   \* bounded counter
 
-vars == <<phase, hostState, hostSnapshot, convergeResult, rollbackCount>>
+vars == <<phase, hostState, hostSnapshot, convergeResult, convergeAction, rollbackCount>>
 
 \* -----------------------------------------------------------------------
-\* Initial state: all hosts clean, protocol idle
+\* Initial state
+\*
+\* Each host's dataset is EITHER absent (needs create) or clean (exists,
+\* needs modify). Both are valid starting points — TLC explores both.
 \* -----------------------------------------------------------------------
 
 Init ==
     /\ phase = "idle"
-    /\ hostState = [h \in Hosts |-> "clean"]
+    /\ hostState \in [Hosts -> {"absent", "clean"}]
     /\ hostSnapshot = [h \in Hosts |-> ""]
     /\ convergeResult = [h \in Hosts |-> "pending"]
+    /\ convergeAction = [h \in Hosts |-> ""]
     /\ rollbackCount = 0
 
 \* -----------------------------------------------------------------------
-\* Phase 1: Snapshot all hosts BEFORE any changes
+\* Phase 1: Prepare — snapshot existing datasets, mark absent ones
+\*
+\* For existing datasets: take a snapshot (rollback target).
+\* For absent datasets: mark as "create" (rollback = destroy).
 \* -----------------------------------------------------------------------
 
-\* Take a pre-converge snapshot on one host (atomic per host)
-TakeSnapshot(h) ==
-    /\ phase = "snapshot"
-    /\ hostState[h] = "clean"
-    /\ hostState' = [hostState EXCEPT ![h] = "snapshotted"]
-    /\ hostSnapshot' = [hostSnapshot EXCEPT ![h] = "pre-converge"]
-    /\ UNCHANGED <<phase, convergeResult, rollbackCount>>
-
-\* All hosts snapshotted -> move to converge phase
-AllSnapshotted ==
-    /\ phase = "snapshot"
-    /\ \A h \in Hosts : hostState[h] = "snapshotted"
-    /\ phase' = "converge"
-    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, rollbackCount>>
-
-\* Start the protocol: idle -> snapshot phase
 StartProtocol ==
     /\ phase = "idle"
-    /\ phase' = "snapshot"
-    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, rollbackCount>>
+    /\ phase' = "prepare"
+    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, convergeAction, rollbackCount>>
+
+\* Prepare a host with an EXISTING dataset: snapshot it
+PrepareExisting(h) ==
+    /\ phase = "prepare"
+    /\ hostState[h] = "clean"
+    /\ hostState' = [hostState EXCEPT ![h] = "prepared"]
+    /\ hostSnapshot' = [hostSnapshot EXCEPT ![h] = "pre-converge"]
+    /\ convergeAction' = [convergeAction EXCEPT ![h] = "modify"]
+    /\ UNCHANGED <<phase, convergeResult, rollbackCount>>
+
+\* Prepare a host with an ABSENT dataset: no snapshot, mark for create
+PrepareAbsent(h) ==
+    /\ phase = "prepare"
+    /\ hostState[h] = "absent"
+    /\ hostState' = [hostState EXCEPT ![h] = "prepared"]
+    /\ hostSnapshot' = [hostSnapshot EXCEPT ![h] = "none"]
+    /\ convergeAction' = [convergeAction EXCEPT ![h] = "create"]
+    /\ UNCHANGED <<phase, convergeResult, rollbackCount>>
+
+\* All hosts prepared -> move to converge
+AllPrepared ==
+    /\ phase = "prepare"
+    /\ \A h \in Hosts : hostState[h] = "prepared"
+    /\ phase' = "converge"
+    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, convergeAction, rollbackCount>>
 
 \* -----------------------------------------------------------------------
-\* Phase 2: Converge each host (may succeed or fail, independently)
+\* Phase 2: Converge (create or modify, may fail)
 \* -----------------------------------------------------------------------
 
-\* A host converges successfully
 ConvergeSuccess(h) ==
     /\ phase = "converge"
-    /\ hostState[h] = "snapshotted"
+    /\ hostState[h] = "prepared"
     /\ hostState' = [hostState EXCEPT ![h] = "converged"]
     /\ convergeResult' = [convergeResult EXCEPT ![h] = "ok"]
-    /\ UNCHANGED <<phase, hostSnapshot, rollbackCount>>
+    /\ UNCHANGED <<phase, hostSnapshot, convergeAction, rollbackCount>>
 
-\* A host fails to converge (ZFS error, permission denied, quota, etc.)
 ConvergeFail(h) ==
     /\ phase = "converge"
-    /\ hostState[h] = "snapshotted"
+    /\ hostState[h] = "prepared"
     /\ hostState' = [hostState EXCEPT ![h] = "failed"]
     /\ convergeResult' = [convergeResult EXCEPT ![h] = "error"]
-    /\ UNCHANGED <<phase, hostSnapshot, rollbackCount>>
+    /\ UNCHANGED <<phase, hostSnapshot, convergeAction, rollbackCount>>
 
-\* All hosts have reported (either converged or failed) -> decide
 AllConverged ==
     /\ phase = "converge"
     /\ \A h \in Hosts : hostState[h] \in {"converged", "failed"}
     /\ IF \A h \in Hosts : convergeResult[h] = "ok"
-       THEN phase' = "verify"         \* all succeeded -> verify
-       ELSE phase' = "rollback"        \* any failed -> rollback ALL
-    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, rollbackCount>>
+       THEN phase' = "verify"
+       ELSE phase' = "rollback"
+    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, convergeAction, rollbackCount>>
 
 \* -----------------------------------------------------------------------
 \* Phase 3a: Verify (all succeeded)
@@ -99,34 +112,49 @@ VerifyDone ==
     /\ \A h \in Hosts : hostState[h] = "converged"
     /\ hostState' = [h \in Hosts |-> "verified"]
     /\ phase' = "done"
-    /\ UNCHANGED <<hostSnapshot, convergeResult, rollbackCount>>
+    /\ UNCHANGED <<hostSnapshot, convergeResult, convergeAction, rollbackCount>>
 
 \* -----------------------------------------------------------------------
-\* Phase 3b: Rollback (any failed -> rollback ALL hosts)
+\* Phase 3b: Rollback
+\*
+\* Modified datasets: zfs rollback to pre-converge snapshot.
+\* Created datasets: zfs destroy (undo the create).
+\* Failed datasets: no-op (changes never applied, or create failed).
 \* -----------------------------------------------------------------------
 
-\* Rollback a converged host to its pre-converge snapshot
-RollbackHost(h) ==
+\* Rollback a MODIFIED dataset that was converged: zfs rollback
+RollbackModified(h) ==
     /\ phase = "rollback"
     /\ hostState[h] = "converged"
+    /\ convergeAction[h] = "modify"
     /\ hostSnapshot[h] = "pre-converge"
     /\ hostState' = [hostState EXCEPT ![h] = "rolled_back"]
     /\ rollbackCount' = rollbackCount + 1
-    /\ UNCHANGED <<phase, hostSnapshot, convergeResult>>
+    /\ UNCHANGED <<phase, hostSnapshot, convergeResult, convergeAction>>
 
-\* A failed host doesn't need rollback (changes never applied)
+\* Rollback a CREATED dataset that was converged: zfs destroy
+RollbackCreated(h) ==
+    /\ phase = "rollback"
+    /\ hostState[h] = "converged"
+    /\ convergeAction[h] = "create"
+    /\ hostSnapshot[h] = "none"
+    /\ hostState' = [hostState EXCEPT ![h] = "rolled_back"]
+    /\ rollbackCount' = rollbackCount + 1
+    /\ UNCHANGED <<phase, hostSnapshot, convergeResult, convergeAction>>
+
+\* Skip a failed host (changes never applied or create failed)
 SkipFailedHost(h) ==
     /\ phase = "rollback"
     /\ hostState[h] = "failed"
     /\ hostState' = [hostState EXCEPT ![h] = "rolled_back"]
-    /\ UNCHANGED <<phase, hostSnapshot, convergeResult, rollbackCount>>
+    /\ UNCHANGED <<phase, hostSnapshot, convergeResult, convergeAction, rollbackCount>>
 
 \* All hosts rolled back -> protocol failed cleanly
 AllRolledBack ==
     /\ phase = "rollback"
     /\ \A h \in Hosts : hostState[h] = "rolled_back"
     /\ phase' = "failed"
-    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, rollbackCount>>
+    /\ UNCHANGED <<hostState, hostSnapshot, convergeResult, convergeAction, rollbackCount>>
 
 \* -----------------------------------------------------------------------
 \* Next-state relation
@@ -134,38 +162,44 @@ AllRolledBack ==
 
 Next ==
     \/ StartProtocol
-    \/ \E h \in Hosts : TakeSnapshot(h)
-    \/ AllSnapshotted
+    \/ \E h \in Hosts : PrepareExisting(h)
+    \/ \E h \in Hosts : PrepareAbsent(h)
+    \/ AllPrepared
     \/ \E h \in Hosts : ConvergeSuccess(h)
     \/ \E h \in Hosts : ConvergeFail(h)
     \/ AllConverged
     \/ VerifyDone
-    \/ \E h \in Hosts : RollbackHost(h)
+    \/ \E h \in Hosts : RollbackModified(h)
+    \/ \E h \in Hosts : RollbackCreated(h)
     \/ \E h \in Hosts : SkipFailedHost(h)
     \/ AllRolledBack
-    \/ (phase \in {"done", "failed"} /\ UNCHANGED vars)  \* terminal stuttering
+    \/ (phase \in {"done", "failed"} /\ UNCHANGED vars)
 
 \* -----------------------------------------------------------------------
-\* Safety: No Partial State
-\*
-\* THE PROPERTY THAT R5 VIOLATED: at protocol termination, either ALL
-\* hosts are verified (success) or ALL hosts are rolled back (failure).
-\* No host is left in "converged" state while another is "failed".
+\* Safety invariants
 \* -----------------------------------------------------------------------
 
+\* At termination: either ALL verified or ALL rolled back. No partial state.
 NoPartialState ==
     phase \in {"done", "failed"} =>
-        \/ \A h \in Hosts : hostState[h] = "verified"      \* all succeeded
-        \/ \A h \in Hosts : hostState[h] = "rolled_back"   \* all rolled back
+        \/ \A h \in Hosts : hostState[h] = "verified"
+        \/ \A h \in Hosts : hostState[h] = "rolled_back"
 
-\* Stronger: at ANY point during execution, if any host has failed,
-\* no host should remain in "converged" without being rolled back.
+\* No converged host left behind when any host failed.
 NoConvergedWithFailure ==
     (\E h \in Hosts : hostState[h] = "failed") =>
         ~(\E h2 \in Hosts : hostState[h2] = "converged" /\ phase = "done")
 
+\* Rollback action matches the converge action:
+\*   modify -> uses snapshot (zfs rollback)
+\*   create -> no snapshot (zfs destroy)
+RollbackMatchesAction ==
+    \A h \in Hosts :
+        (hostState[h] = "rolled_back" /\ convergeAction[h] = "modify")
+            => hostSnapshot[h] = "pre-converge"
+
 \* -----------------------------------------------------------------------
-\* Liveness: the protocol eventually terminates
+\* Liveness
 \* -----------------------------------------------------------------------
 
 ConvergenceTerminates ==
@@ -179,15 +213,5 @@ Spec ==
     /\ Init
     /\ [][Next]_vars
     /\ WF_vars(Next)
-
-\* -----------------------------------------------------------------------
-\* Model checking configuration
-\*
-\* In TLC, set:
-\*   Hosts <- {"mac_248", "mac_247"}
-\*   MaxRetries <- 3
-\*   Invariant: NoPartialState /\ NoConvergedWithFailure
-\*   Property: ConvergenceTerminates
-\* -----------------------------------------------------------------------
 
 =============================================================================

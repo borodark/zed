@@ -213,10 +213,10 @@ defmodule Zed.Cluster do
   defp do_coordinated_converge(targets, opts) do
     Logger.info("[Zed.Cluster] coordinated converge: #{length(targets)} hosts")
 
-    # Phase 1: Snapshot all hosts
-    case snapshot_all(targets) do
-      {:ok, snapshots} ->
-        Logger.info("[Zed.Cluster] phase 1 (snapshot): #{map_size(snapshots)} hosts snapshotted")
+    # Phase 1: Prepare — snapshot existing, mark absent
+    case prepare_all(targets) do
+      {:ok, preparations} ->
+        Logger.info("[Zed.Cluster] phase 1 (prepare): #{map_size(preparations)} hosts ready")
 
         # Phase 2: Converge all hosts
         results = converge_all_targets(targets, opts)
@@ -231,12 +231,12 @@ defmodule Zed.Cluster do
         else
           # Some failed → Phase 3: rollback ALL to pre-converge snapshots
           Logger.warning("[Zed.Cluster] phase 2 (converge): #{length(failed)} failed, rolling back all")
-          rollback_results = rollback_all(targets, snapshots)
+          rollback_results = rollback_all(targets, preparations)
 
           {:error, :partial_failure, %{
             failed: Enum.map(failed, fn {name, err} -> {name, err} end),
             rolled_back: rollback_results,
-            snapshots: snapshots
+            preparations: preparations
           }}
         end
 
@@ -246,48 +246,63 @@ defmodule Zed.Cluster do
     end
   end
 
-  # Phase 1: snapshot every host's datasets
-  defp snapshot_all(targets) do
+  # Phase 1: Prepare — snapshot existing datasets, mark absent ones.
+  # Returns {:ok, %{host_name => [%{path, action, snapshot}]}}
+  defp prepare_all(targets) do
     ts = timestamp()
+    snap_name = "zed-coordinated-#{ts}"
 
     results =
       Enum.map(targets, fn %{name: name, node: node_name, ir: host_ir} ->
-        snap_name = "zed-coordinated-#{ts}"
-
-        result =
+        preparations =
           Enum.map(host_ir.datasets, fn dataset_node ->
             full_path = "#{host_ir.pool}/#{dataset_node.id}"
-            snap = "#{full_path}@#{snap_name}"
 
-            if node_name == node() do
-              # Local
-              Zed.ZFS.Snapshot.create(full_path, snap_name)
-              snap
-            else
-              # Remote
-              case rpc_call(node_name, Zed.ZFS.Snapshot, :create, [full_path, snap_name], @rpc_timeout) do
-                {:ok, _} -> snap
-                {:error, _, _} = err -> err
-                err -> {:error, :snapshot_failed, err}
+            exists? =
+              if node_name == node() do
+                Zed.ZFS.Dataset.exists?(full_path)
+              else
+                rpc_call(node_name, Zed.ZFS.Dataset, :exists?, [full_path], @rpc_timeout)
               end
+
+            if exists? do
+              # Existing dataset: snapshot for rollback
+              snap_result =
+                if node_name == node() do
+                  Zed.ZFS.Snapshot.create(full_path, snap_name)
+                else
+                  rpc_call(node_name, Zed.ZFS.Snapshot, :create, [full_path, snap_name], @rpc_timeout)
+                end
+
+              case snap_result do
+                {:ok, _} ->
+                  %{path: full_path, action: :modify, snapshot: "#{full_path}@#{snap_name}"}
+                {:error, _, _} = err ->
+                  %{path: full_path, action: :error, error: err}
+                _ ->
+                  %{path: full_path, action: :modify, snapshot: "#{full_path}@#{snap_name}"}
+              end
+            else
+              # Absent dataset: will be created; rollback = destroy
+              %{path: full_path, action: :create, snapshot: nil}
             end
           end)
 
-        errors = Enum.filter(result, &match?({:error, _, _}, &1))
+        errors = Enum.filter(preparations, &(&1.action == :error))
 
         if errors == [] do
-          {name, result}
+          {name, preparations}
         else
           {name, {:error, errors}}
         end
       end)
 
-    snapshot_failures = Enum.filter(results, fn {_, v} -> match?({:error, _}, v) end)
+    failures = Enum.filter(results, fn {_, v} -> match?({:error, _}, v) end)
 
-    if snapshot_failures == [] do
+    if failures == [] do
       {:ok, Map.new(results)}
     else
-      {:error, :snapshot_failed, snapshot_failures}
+      {:error, :prepare_failed, failures}
     end
   end
 
@@ -308,18 +323,31 @@ defmodule Zed.Cluster do
     end)
   end
 
-  # Phase 3: rollback ALL hosts to pre-converge snapshots
-  defp rollback_all(targets, snapshots) do
-    Enum.map(targets, fn %{name: name, node: node_name, ir: host_ir} ->
-      snap_list = Map.get(snapshots, name, [])
+  # Phase 3: rollback ALL hosts
+  # For :modify actions → zfs rollback to pre-converge snapshot
+  # For :create actions → zfs destroy (undo the create)
+  defp rollback_all(targets, preparations) do
+    Enum.map(targets, fn %{name: name, node: node_name} ->
+      preps = Map.get(preparations, name, [])
 
       results =
-        Enum.map(snap_list, fn
-          snap when is_binary(snap) ->
+        Enum.map(preps, fn
+          %{action: :modify, snapshot: snap} when is_binary(snap) ->
+            Logger.info("[Zed.Cluster] rollback #{name}: zfs rollback #{snap}")
+
             if node_name == node() do
               Zed.ZFS.Snapshot.rollback(snap)
             else
               rpc_call(node_name, Zed.ZFS.Snapshot, :rollback, [snap], @rpc_timeout)
+            end
+
+          %{action: :create, path: path} ->
+            Logger.info("[Zed.Cluster] rollback #{name}: zfs destroy #{path}")
+
+            if node_name == node() do
+              Zed.ZFS.Dataset.destroy(path)
+            else
+              rpc_call(node_name, Zed.ZFS.Dataset, :destroy, [path], @rpc_timeout)
             end
 
           other ->
