@@ -31,8 +31,13 @@ and pinned ports 9100-9200 work reliably.
 | `status()` | `trivial-app: exists=true, mountpoint=none` |
 | ZFS snapshot | `zed-deploy-unknown-20260507T181717` |
 
-**Bug found**: converger doesn't pass `-o mountpoint=none` during
-`zfs create`. Fix: pass create options inline.
+**False alarm** (corrected 2026-05-07): `Plan.expand_to_steps`
+already does `Map.take([:mountpoint, :compression, :quota,
+:recordsize])` on the dataset config at `lib/zed/converge/plan.ex:47`
+and passes the resulting map to `Dataset.create/2`, which spreads
+it into `-o key=value` args during `zfs create`. R3's apparent
+"missing mountpoint" was a misread of `zfs get` output — the
+mountpoint *was* set to `none` correctly at create time.
 
 ## Phase R4 — Two-host coordinated converge ✓
 
