@@ -44,6 +44,11 @@ defmodule Zed.ZFS.Dataset do
     ZFS.cmd(["set", "#{property}=#{value}", dataset])
   end
 
+  @doc "Destroy a dataset."
+  def destroy(dataset) do
+    ZFS.cmd(["destroy", "-r", dataset])
+  end
+
   @doc "Get the mountpoint of a dataset."
   def mountpoint(dataset) do
     case get_property(dataset, "mountpoint") do
