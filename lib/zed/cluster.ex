@@ -225,9 +225,9 @@ defmodule Zed.Cluster do
         failed = Enum.filter(results, fn {_, r} -> not match?({:ok, _}, r) end)
 
         if failed == [] do
-          # All succeeded → done
+          # All converged → Phase 2.5: health checks (per HealthCheck.tla)
           Logger.info("[Zed.Cluster] phase 2 (converge): all #{length(succeeded)} hosts succeeded")
-          {:ok, Map.new(results)}
+          run_health_phase(targets, preparations, results, opts)
         else
           # Some failed → Phase 3: rollback ALL to pre-converge snapshots
           Logger.warning("[Zed.Cluster] phase 2 (converge): #{length(failed)} failed, rolling back all")
@@ -320,6 +320,52 @@ defmodule Zed.Cluster do
         end
 
       {name, result}
+    end)
+  end
+
+  # Phase 2.5: health checks (per specs/HealthCheck.tla).
+  # Composes with the converge result: all-passed → {:ok, results};
+  # any-failed → rollback all, return {:error, :health_failed, ...}.
+  defp run_health_phase(targets, preparations, results, opts) do
+    health_targets = extract_health_targets(targets)
+
+    if health_targets == [] do
+      {:ok, Map.new(results)}
+    else
+      Logger.info("[Zed.Cluster] phase 2.5 (health): #{length(health_targets)} hosts")
+      health_opts = Keyword.take(opts, [:max_retries, :check_timeout, :run_timeout, :checker])
+
+      case Zed.Converge.Health.run(health_targets, health_opts) do
+        {:ok, _outcomes} ->
+          Logger.info("[Zed.Cluster] phase 2.5 (health): all hosts healthy")
+          {:ok, Map.new(results)}
+
+        {:error, kind, outcomes} ->
+          Logger.warning(
+            "[Zed.Cluster] phase 2.5 (health): #{kind}, rolling back: #{inspect(outcomes)}"
+          )
+
+          rollback_results = rollback_all(targets, preparations)
+
+          {:error, :health_failed,
+           %{
+             health_outcomes: outcomes,
+             rolled_back: rollback_results,
+             preparations: preparations
+           }}
+      end
+    end
+  end
+
+  # Extract per-host health-check specs from each target's IR.
+  # Returns [{host_name, [{type, opts}, ...]}, ...] for hosts with checks.
+  defp extract_health_targets(targets) do
+    Enum.flat_map(targets, fn %{name: name, ir: host_ir} ->
+      checks =
+        host_ir.apps
+        |> Enum.flat_map(fn app -> Map.get(app.config, :health, []) end)
+
+      if checks == [], do: [], else: [{name, checks}]
     end)
   end
 
