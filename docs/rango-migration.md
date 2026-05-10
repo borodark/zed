@@ -25,18 +25,30 @@ explicit action commands (destructive or state-changing).
 5. Each ZFS destroy is a one-way door. Read what you are about to
    destroy aloud before destroying it.
 
-## Hardware as inventoried 2026-05-08
+## Hardware as inventoried 2026-05-09
 
-| Device | Size | Role |
-|---|---|---|
-| ada0 | 112G SSD | boot-pool mirror leg 1 — **DO NOT TOUCH** |
-| ada3 | 119G SSD | boot-pool mirror leg 2 — **DO NOT TOUCH** |
-| **ada4** | **120G Kingston SUV500** | **FreeBSD 15 install target** |
-| ada1, ada2 | 3.6T, 5.5T | jeff pool — preserve |
-| da0, da1, da2, da3 | 3.6T each | jeff pool — preserve |
+| Device | Model | Form / location | Role |
+|---|---|---|---|
+| **ada0** | Kingston SA400S37120G (s/n `50026B76822C9F86`) | 2.5" SATA, **bay 1** | boot-pool leg 1 |
+| **ada1** | Seagate ST4000VN006 (s/n `ZW635XY3`) | 3.5" SATA, jeff data | jeff |
+| **ada2** | WD WD6001F4PZ (s/n `WD-WXA1D6542DPN`) | 3.5" SATA, jeff data | jeff |
+| **ada3** | SanDisk X400 M.2 2280 128G (s/n `163960427178`) | **M.2 on aftermarket adapter** (NOT in a sled bay) | boot-pool leg 2 |
+| **ada4** | Kingston SUV500120G (s/n `50026B778216D2B7`) | 2.5" SATA, currently in **bay 4** | **FreeBSD 15 install target** |
+| da0–da3 | (4 × ~3.6T on PCIe SAS HBA) | not in front bays | jeff |
 
-Migration target writes only to **ada4**. Both boot-mirror disks remain
-untouched, preserving a working TrueNAS install as the rollback path.
+**Critical sled identification** — two 120G Kingston 2.5" SSDs in the
+chassis. Distinguish by the model number printed on the drive label:
+
+| Sled to PULL (ada0) | Sled to MOVE (ada4) |
+|---|---|
+| Model: **SA400S37120G** | Model: **SUV500120G** |
+| Serial: 50026B76822C9F86 | Serial: 50026B778216D2B7 |
+| Family: A400 | Family: UV400/500 |
+
+Migration writes only to ada4 during install. The boot-pool legs (ada0
++ ada3) are intentionally rendered non-bootable for Phase 2 and
+remain available for rollback (ada0 set aside, ada3 ESP wiped with a
+backup we can restore).
 
 ## Migration scope (after user decisions, revised 2026-05-09)
 
@@ -454,59 +466,257 @@ shutdown).**
 
 ---
 
-## Phase 2 — Install FreeBSD 15 onto ada4 (USER ACTION)
+## Phase 2 — Install FreeBSD 15 onto ada4 (in-place, no install media)
 
-**The executing Claude on rango cannot perform this phase.** Hand off
-to the user with these instructions:
+**Constraint that drives this phase:** rango is a Mac Pro 2008 with
+**no GPU installed**. Apple EFI's interactive boot picker (Option key)
+is invisible. `bsdinstall`'s TUI cannot run without a display. So we
+do *not* boot from a USB install stick. Instead we install FreeBSD 15
+**from the running TrueNAS shell**, mounting the FreeBSD 15 ISO
+locally and pointing `bsdinstall script` at it.
 
-### 2.1 Power off rango
+The disk swap is the only step that requires hands on the chassis.
+
+### 2.0 Verify ISO present and integrity
 
 ```sh
-shutdown -p now
+ls -la /mnt/jeff/home/io/installs/FreeBSD-15.0-RELEASE-amd64-dvd1.iso
+sha256 /mnt/jeff/home/io/installs/FreeBSD-15.0-RELEASE-amd64-dvd1.iso
+# Expect: 8cf8e03d8df16401fd5a507480a3270091aa30b59ecf79a9989f102338e359aa
 ```
 
-### 2.2 Boot from FreeBSD 15.0-RELEASE install media
+### 2.1 Pre-shutdown software prep — neutralise ada3 boot path
 
-User must:
+Apple EFI scans every disk for a bootable ESP. To guarantee EFI picks
+ada4 after the bay swap, ada3's ESP is wiped before we shut down.
+Backed up first so rollback is one `dd` away.
 
-1. Insert FreeBSD 15.0-RELEASE install USB.
-2. Power on, enter BIOS/UEFI boot menu.
-3. Select the install USB.
+```sh
+# Back up ada3's ESP (260M, plenty of room)
+sudo dd if=/dev/ada3p1 of=/mnt/jeff/migration-2026-05/ada3-esp-backup.img bs=1M
+ls -la /mnt/jeff/migration-2026-05/ada3-esp-backup.img
 
-### 2.3 Run bsdinstall against ada4 ONLY
+# Detach ada3 from boot-pool so wiping its ESP doesn't trigger pool errors
+sudo zpool detach boot-pool ada3p2
 
-User selects in `bsdinstall`:
+# Verify boot-pool is now ONLINE-degraded with only ada0p2
+sudo zpool status boot-pool
 
-- **Hostname:** `rango`
-- **Distribution:** kernel-dbg, lib32 (default selection is fine)
-- **Network:** DHCP from rango's existing NIC
-- **Partitioning:** Auto (ZFS)
-  - **Pool type:** stripe (single disk)
-  - **Pool name:** `zroot`
-  - **Disk selection:** `ada4` ONLY. **Do not select ada0, ada3, ada1, ada2,
-    da0, da1, da2, da3.**
-  - **Encryption:** user choice (recommend GELI off for now to keep boot
-    simple; can add later)
-  - **Swap:** 4G
-- **Root password:** set strong, save securely
-- **Time zone:** America/Detroit (or current)
-- **System hardening:** all defaults
-- **Add user:** create `io` with UID 1000 (others added in Phase 4)
+# Wipe ada3's ESP — first 2 MiB is enough to invalidate the FAT header
+sudo dd if=/dev/zero of=/dev/ada3p1 bs=1M count=2
 
-### 2.4 First boot from ada4
+# Confirm: gpart still shows the partition layout but the ESP is empty
+sudo gpart show ada3
+```
 
-After install completes:
+### 2.2 Mount the FreeBSD 15 ISO
 
-1. Remove install USB.
-2. Reboot.
-3. Enter BIOS/UEFI boot menu, select **ada4** as boot device.
-4. FreeBSD 15 boots. Verify hostname is `rango`, `uname -a` shows
-   15.0-RELEASE.
+```sh
+sudo mdconfig -a -t vnode -f /mnt/jeff/home/io/installs/FreeBSD-15.0-RELEASE-amd64-dvd1.iso -u 0
+sudo mkdir -p /mnt/iso
+sudo mount -t cd9660 -o ro /dev/md0 /mnt/iso
 
-**Rollback at this point:** boot menu select ada0 → TrueNAS comes
-back, jeff intact, no harm done.
+# Confirm
+ls /mnt/iso/usr/freebsd-dist/ | head
+# Expect: base.txz, kernel.txz, MANIFEST, src.txz (we only need base + kernel)
+```
 
-User confirms Phase 2 success → Claude resumes from Phase 3.
+### 2.3 Wipe ada4 to a known state
+
+```sh
+# If ada4 has any partitioning (it had a stale Linux MBR), clear it
+sudo gpart destroy -F /dev/ada4 2>/dev/null
+sudo dd if=/dev/zero of=/dev/ada4 bs=1M count=2
+
+# Verify clean
+sudo gpart show ada4 2>&1
+# Expect: "gpart: No such geom: ada4."
+```
+
+### 2.4 Run bsdinstall in script mode targeting ada4 with GPT labels
+
+Drop the install spec to a file. Note the `PARTITIONS` line uses GPT
+**labels** (third field per partition: `rango-esp`, `rango-swap`,
+`rango-zfs`) so all subsequent references are device-name-independent.
+
+```sh
+sudo tee /tmp/install.sh > /dev/null <<'INSTALL_SCRIPT'
+DISTRIBUTIONS="kernel.txz base.txz"
+PARTITIONS="ada4 GPT { 200M efi rango-esp, 4G freebsd-swap rango-swap, auto freebsd-zfs rango-zfs }"
+HOSTNAME="rango"
+
+#!/bin/sh
+# This second part runs in the chroot of the new system, post-extract.
+
+# Identity + network
+sysrc hostname="rango"
+sysrc ifconfig_DEFAULT="DHCP"
+sysrc sshd_enable="YES"
+sysrc zfs_enable="YES"
+
+# fstab uses GPT labels (stable across device renaming)
+cat > /etc/fstab <<FSTAB
+# Device              Mountpoint    FStype    Options       Dump  Pass#
+/dev/gpt/rango-esp    /boot/efi     msdosfs   rw,noatime    0     0
+/dev/gpt/rango-swap   none          swap      sw            0     0
+FSTAB
+
+# Root password — console-rescue only; SSH is key-only (see below)
+echo '1010' | pw usermod root -h 0
+
+# SSH key authorization for root (the migration controller's pubkey)
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+cat > /root/.ssh/authorized_keys <<KEYS
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKRlRm8ztYu9FC7ooGVKGgF2H/Uo/CG54TyMb1hYj0j7 igor@octanix.com
+KEYS
+chmod 600 /root/.ssh/authorized_keys
+
+# sshd: key-only for root (1010 is too weak for password SSH)
+sed -i '' -e 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+sed -i '' -e 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+# Bootstrap pkg so we can install Samba + iocage in Phase 4 over SSH
+env ASSUME_ALWAYS_YES=yes pkg bootstrap
+
+# Note: do NOT pre-create user io here. Phase 4.3 creates io/jo/po/vo/git
+# with their correct home dirs under /jeff/home/<user>, which can only be
+# done after Phase 3 imports jeff. SSH key on root is the path in until then.
+INSTALL_SCRIPT
+
+# Run it
+sudo env BSDINSTALL_DISTDIR=/mnt/iso/usr/freebsd-dist \
+         bsdinstall script /tmp/install.sh
+```
+
+`bsdinstall script`:
+1. Creates GPT on ada4 with three labelled partitions
+2. Formats ESP as FAT32, freebsd-zfs partition as ZFS (`zroot` pool, single-device stripe)
+3. Extracts `base.txz` + `kernel.txz` from `/mnt/iso/usr/freebsd-dist/`
+4. Mounts ESP, copies `loader.efi` → `/EFI/FreeBSD/loader.efi` AND `/EFI/BOOT/BOOTX64.EFI` (the EFI-spec fallback path Apple EFI honors)
+5. Runs the embedded post-install shell block in the chroot
+6. Unmounts and exports zroot
+
+### 2.5 Verify the install
+
+```sh
+# Pool was exported by bsdinstall — re-import RO to inspect, then export again
+sudo zpool import -o readonly=on -R /tmp/check zroot
+sudo zfs list -o name,used,mountpoint -r zroot
+
+# Critical EFI files
+ls -la /tmp/check/boot/efi/EFI/BOOT/BOOTX64.EFI       # the Apple-EFI-honored fallback
+ls -la /tmp/check/boot/efi/EFI/FreeBSD/loader.efi      # FreeBSD's own path
+
+# Network + SSH config landed
+grep -E "hostname|ifconfig|sshd" /tmp/check/etc/rc.conf
+grep -E "PermitRootLogin|PasswordAuthentication" /tmp/check/etc/ssh/sshd_config
+
+# SSH key authorization
+cat /tmp/check/root/.ssh/authorized_keys
+ls -la /tmp/check/root/.ssh/
+
+# fstab uses GPT labels (the whole point of this exercise)
+cat /tmp/check/etc/fstab
+
+# Export cleanly so Phase 2.7 can boot from this disk
+sudo zpool export zroot
+sudo umount /mnt/iso
+sudo mdconfig -d -u 0
+```
+
+If any check fails, **do not shut down** — fix from TrueNAS first.
+
+### 2.6 Shutdown rango
+
+```sh
+ssh root@192.168.0.33 'shutdown -p now'
+```
+
+The SSH session disconnects when the network goes down (~5 sec before
+poweroff). Wait 30 seconds for the front power LED to go fully dark.
+
+### 2.7 Physical bay swap (case open, rango fully off)
+
+Mac Pro 2008 internal SATA bays — front, behind side panel:
+
+| Bay | Currently holds | After swap |
+|---|---|---|
+| 1 | ada0 (Kingston SA400 — TrueNAS boot) | **ada4 (Kingston SUV500 — FreeBSD)** |
+| 2 | ada1 (Seagate ST4000 — jeff) | unchanged |
+| 3 | ada2 (WD WD6001 — jeff) | unchanged |
+| 4 | ada4 (Kingston SUV500 — install target) | empty |
+
+Ops:
+
+1. Open side panel (lever on back of chassis).
+2. **Pull the bay 1 sled** (Kingston SA400, model `SA400S37120G`,
+   serial `50026B76822C9F86`). Label "**ada0 — TrueNAS rollback —
+   was bay 1**" with masking tape. Set aside.
+3. **Pull the bay 4 sled** (Kingston SUV500, model `SUV500120G`,
+   serial `50026B778216D2B7`). This is ada4 with the FreeBSD install
+   we just did.
+4. **Insert the SUV500 sled into bay 1.** Same drive, new bay.
+5. Bay 4 left empty (rollback could put ada0 back here, but standard
+   rollback puts ada0 back in bay 1).
+6. Confirm jeff data disks (bay 2 and 3, the heavy 3.5") and the M.2
+   ada3 (NOT in any sled bay — on its aftermarket adapter) are
+   undisturbed.
+7. Close case.
+
+**Why move ada4 to bay 1:** Apple EFI scans the motherboard SATA
+controller in port-number order. Bay 1 is port 0 — first thing EFI
+sees. With ada4 in bay 1 and ada3's ESP wiped, **ada4 is unambiguously
+the first (and only) bootable ESP**. No reliance on EFI's behavior
+when scanning past empty/non-bootable bays.
+
+### 2.8 Power on and verify
+
+Press the front power button.
+
+What you cannot see (no GPU): Apple EFI POST → finds ada4 in bay 1
+→ loads `/EFI/BOOT/BOOTX64.EFI` → FreeBSD's loader runs → kernel boots
+→ DHCP → sshd.
+
+From your laptop, watch for ping then SSH:
+
+```sh
+# Should land within 60-90 sec
+while ! ping -c 1 -W 2 192.168.0.33 > /dev/null 2>&1; do
+  echo "$(date) — no response yet, waiting..."
+  sleep 10
+done
+echo "ping OK at $(date)"
+
+while ! nc -z -w 2 192.168.0.33 22 > /dev/null 2>&1; do
+  echo "$(date) — port 22 not open yet"
+  sleep 5
+done
+echo "SSH ready at $(date)"
+
+# Clear stale TrueNAS host key, reconnect
+ssh-keygen -R 192.168.0.33
+ssh root@192.168.0.33 'uname -a; hostname; zpool list; gpart show'
+```
+
+Expected first SSH:
+- `uname -a` → `FreeBSD rango 15.0-RELEASE`
+- `zpool list` → only `zroot` (jeff is Phase 3)
+- `gpart show` → ada4 (or whatever it numbers as now) shows the
+  three labelled partitions
+
+### 2.9 Failure modes and rollback
+
+| Symptom | Diagnosis | Recovery |
+|---|---|---|
+| No ping after 5 min | Apple EFI didn't find a bootable ESP, or FreeBSD bootloader hung at early boot | Long-press front power 10 sec to force off; pull the SUV500 sled from bay 1; re-seat ada0 in bay 1 (and put SUV500 back in bay 4 if you want); from TrueNAS shell after it boots: `dd if=/mnt/jeff/migration-2026-05/ada3-esp-backup.img of=/dev/ada3p1 bs=1M` then `zpool attach boot-pool ada0p2 ada3p2` |
+| Ping responds but no SSH after 5 min | sshd didn't start, or wrong NIC came up | Same rollback (no easy diagnosis without console) |
+| Wrong IP responds | DHCP gave a different lease | `nmap -sn 192.168.0.0/24` from your laptop, or check router's lease table |
+| SSH responds with old host key warning | Expected — rango has a fresh host key | `ssh-keygen -R 192.168.0.33` then re-SSH |
+
+The phase-2 rollback **never touches jeff destructively**. ada0
+preserved as the SA400 sled, ada3 ESP preserved as a 260M dd image on
+jeff. Restoring both is two commands plus a sled re-seat.
 
 ---
 
