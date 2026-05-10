@@ -38,17 +38,19 @@ explicit action commands (destructive or state-changing).
 Migration target writes only to **ada4**. Both boot-mirror disks remain
 untouched, preserving a working TrueNAS install as the rollback path.
 
-## Migration scope (after user decisions)
+## Migration scope (after user decisions, revised 2026-05-09)
 
 | Bucket | Size | Action |
 |---|---|---|
 | `jeff/home` | 622G | preserve |
 | `jeff/video` | 312G | preserve |
+| `jeff/timemachines/*` | 566G | **preserve** (decision reversed; keep TM) |
+| `jeff/iocage/*` | 8.16G | **preserve** (decision reversed; install py39-iocage on FreeBSD 15) |
 | `jeff/octanix_git`, `jeff/S3`, `jeff/agent1`, `jeff/zed-test`, `jeff/zed-dev` | <30M | preserve |
-| `jeff/.system/samba4` | 1.49M | **extract before drop** (SID + tdbs) |
-| `jeff/.system/*` (other) | ~211M | drop (TrueNAS middleware) |
-| `jeff/timemachines/*` | 566G | **destroy pre-migration** (user decision) |
-| `jeff/iocage/*` | 8.16G | **destroy pre-migration** (user decision) |
+| `jeff/.system/samba4/{private,registry.tdb,*.tdb}` | 1.49M | **extract before drop** (SIDs + share defs) |
+| `jeff/.system/*` (other) | ~211M | drop (TrueNAS middleware artifacts) |
+
+**Total preserve: ~1.50 TB.** No bucket destroyed pre-migration.
 
 ## Identity to preserve
 
@@ -221,28 +223,71 @@ zpool list jeff
 **Expect:** `state: ONLINE`, raidz3-0 ONLINE, six leaves ONLINE.
 Last scrub date should be recent (within months).
 
-### 0.4 Verify scope-removal candidates still present
+### 0.4 Verify timemachines + iocage state
+
+Per scope decision (2026-05-09): **both stay**. This step confirms
+they're present and identifies running jails so Phase 4 knows what to
+re-discover.
 
 ```sh
 zfs list -r jeff/timemachines 2>/dev/null
 zfs list -r jeff/iocage 2>/dev/null
-iocage list 2>/dev/null
+iocage list 2>/dev/null   # NOTE: may return empty; iocage state DB drift
+jls                       # authoritative — kernel view of running jails
 ```
 
-These tell us whether the user has already destroyed the TM and iocage
-trees per the standalone instructions. Either state is fine; the
-runbook adapts in Phase 1.
+**TrueNAS quirk:** `iocage list` (Python wrapper) often returns empty
+even when jails are running because the WebUI starts jails through
+`service ix-iocage` rather than `iocage start`, and the Python state
+DB doesn't sync. Use `jls` for ground truth.
 
-### 0.5 Verify Samba private dir location
+Expected on rango (verified 2026-05-09):
+
+| Jail | JID | Path |
+|---|---|---|
+| `plausible` | 3 | `/mnt/jeff/iocage/jails/plausible/root` |
+| `zed-agent-1` | 5 | `/mnt/jeff/iocage/jails/zed-agent-1/root` |
+
+Phase 4 will install `py39-iocage` on FreeBSD 15 and re-discover both.
+
+### 0.5 Locate Samba state directory
 
 ```sh
-testparm -s 2>/dev/null | grep -iE "private dir|state directory|cache directory"
-ls -la /var/db/samba4/private/ 2>/dev/null | head -20
-ls -la /var/db/system/samba4/private/ 2>/dev/null | head -20
+ls -la /var/db/system/samba4/private/ 2>/dev/null
+ls -la /var/db/system/samba4/ 2>/dev/null
+sqlite3 -header -column /data/freenas-v1.db \
+  "SELECT cifs_name, cifs_path, cifs_purpose, cifs_browsable, cifs_ro, cifs_timemachine, cifs_enabled FROM sharing_cifs_share;" \
+  2>/dev/null
 ```
 
-**Record:** exact path that contains `passdb.tdb`, `secrets.tdb`. This
-is the path Phase 1 backs up and Phase 4 imports from.
+**TrueNAS uses `/var/db/system/samba4/`** (not the upstream Samba
+default `/var/db/samba4/`). Critical files:
+
+| File | Purpose |
+|---|---|
+| `private/passdb.tdb` | NT password hashes + per-user SIDs |
+| `private/secrets.tdb` | machine SID + LDAP secrets |
+| `private/netlogon_creds_cli.tdb` | netlogon |
+| `registry.tdb` | share definitions (registry-shares mode) |
+| `account_policy.tdb` | password policy |
+| `group_mapping.tdb` | NT group → Unix group mapping |
+| `share_info.tdb` | per-share NT permissions |
+| `winbindd_idmap.tdb` | UID ↔ SID mapping |
+
+**TrueNAS architecture caveat:** `testparm`, `net`, `pdbedit`, and
+`midclt` binaries are unlinked after the daemons launch (NanoBSD-style
+overlay design). They're NOT available in any non-interactive shell.
+Use the **middleware DB** (`/data/freenas-v1.db`, sqlite) as the
+source of truth for share definitions instead — it has clean,
+human-readable rows in `sharing_cifs_share`.
+
+Expected share rows on rango (verified 2026-05-09):
+
+| Share | Path | TrueNAS preset | TM? |
+|---|---|---|---|
+| `home` | `/mnt/jeff/home` | PRIVATE_DATASETS | no |
+| `video` | `/mnt/jeff/video` | MULTI_PROTOCOL_NFS | no |
+| `timemachines` | `/mnt/jeff/timemachines` | ENHANCED_TIMEMACHINE | yes |
 
 ### 0.6 Verify free space for snapshot retention
 
@@ -331,35 +376,59 @@ cp -a /usr/local/etc/ssh ./local-etc-ssh 2>/dev/null
 ls -la
 ```
 
-### 1.4 Extract Samba private directory (CRITICAL — preserves SIDs)
+### 1.4 Extract Samba state directory (CRITICAL — preserves SIDs)
 
-Replace `<SAMBA_PRIVATE_DIR>` below with the path discovered in 0.5.
+TrueNAS path: `/var/db/system/samba4/` (verified Phase 0.5).
 
 ```sh
-SAMBA_DIR="<SAMBA_PRIVATE_DIR>"  # e.g. /var/db/samba4/private
-mkdir -p /mnt/jeff/migration-2026-05/samba-private
+mkdir -p /mnt/jeff/migration-2026-05/samba-state
 
 # Copy preserving permissions, timestamps, ownership
-cp -a "${SAMBA_DIR}"/. /mnt/jeff/migration-2026-05/samba-private/
+cp -a /var/db/system/samba4/. /mnt/jeff/migration-2026-05/samba-state/
 
 # Verify the critical tdbs are present
-ls -la /mnt/jeff/migration-2026-05/samba-private/ | grep -E "passdb|secrets|account_policy"
+ls -la /mnt/jeff/migration-2026-05/samba-state/private/ | grep -E "passdb|secrets|netlogon"
+ls -la /mnt/jeff/migration-2026-05/samba-state/registry.tdb
+ls -la /mnt/jeff/migration-2026-05/samba-state/group_mapping.tdb \
+       /mnt/jeff/migration-2026-05/samba-state/account_policy.tdb \
+       /mnt/jeff/migration-2026-05/samba-state/share_info.tdb
 ```
 
-**Expect:** at minimum `passdb.tdb` and `secrets.tdb`. These carry the
-machine SID and SMB password hashes. Phase 4 imports them verbatim.
+**Expect:** `private/passdb.tdb`, `private/secrets.tdb`, plus
+`registry.tdb`, `group_mapping.tdb`, `account_policy.tdb`,
+`share_info.tdb` at the top level of `samba-state/`.
 
-### 1.5 Document share definitions
+`passdb.tdb` + `secrets.tdb` carry the machine SID and NT password
+hashes — Phase 4 imports them verbatim into the new system's
+`/var/db/samba4/private/`. `registry.tdb` is reference-only on the new
+system (we hand-write `smb4.conf` instead — Phase 4.6).
+
+### 1.5 Document share definitions (from middleware DB)
+
+`testparm`, `net`, `pdbedit`, and `midclt` binaries are unlinked under
+TrueNAS's NanoBSD overlay (verified Phase 0.5) — we cannot invoke
+them. The middleware DB is the authoritative source for share defs:
 
 ```sh
-testparm -s > /mnt/jeff/migration-2026-05/smb-config-final.txt 2>/dev/null
-# also TrueNAS-generated extras:
-ls -la /usr/local/etc/smb4.conf.d/ 2>/dev/null
-cp -a /usr/local/etc/smb4.conf.d /mnt/jeff/migration-2026-05/smb4-conf-d 2>/dev/null
+sqlite3 -header -column /data/freenas-v1.db \
+  "SELECT cifs_name, cifs_path, cifs_purpose, cifs_browsable, cifs_ro, cifs_timemachine, cifs_enabled FROM sharing_cifs_share;" \
+  > /mnt/jeff/migration-2026-05/smb-shares-truth.txt
+
+# Also dump any TrueNAS-specific SMB options (auxsmbconf) per share:
+sqlite3 -header /data/freenas-v1.db \
+  "SELECT cifs_name, cifs_auxsmbconf FROM sharing_cifs_share WHERE cifs_auxsmbconf != '';" \
+  >> /mnt/jeff/migration-2026-05/smb-shares-truth.txt
+
+# Snapshot the full middleware DB for offline reference
+cp /data/freenas-v1.db /mnt/jeff/migration-2026-05/truenas-middleware-db.sqlite
+
+# Snapshot the running smb4.conf even though it's mostly auto-generated
+cp /usr/local/etc/smb4.conf /mnt/jeff/migration-2026-05/smb4.conf.truenas-generated
 ```
 
-This is the source-of-truth for what shares exist and their options.
-Phase 4 hand-writes a new `smb4.conf` referencing these.
+This is the source-of-truth for Phase 4.6, which hand-writes a new
+`smb4.conf` with explicit `[home]`, `[video]`, `[timemachines]`
+sections (no `include = registry`).
 
 ### 1.6 Snapshot `jeff/migration-2026-05` itself
 
@@ -515,8 +584,8 @@ zfs destroy -r jeff/.system   # TrueNAS middleware artifacts
 ```
 
 **Confirmation read-aloud:** this destroys 213M of TrueNAS config
-artifacts. The Samba private dir contents are already preserved in
-`/jeff/migration-2026-05/samba-private/`.
+artifacts. The Samba state is already preserved in
+`/jeff/migration-2026-05/samba-state/`.
 
 ### 3.6 Snapshot post-import state
 
@@ -541,11 +610,21 @@ gone, snapshot taken.
 
 ```sh
 pkg update
-pkg install -y bash zsh sudo doas samba422 vim git
+pkg install -y bash zsh sudo doas samba422 vim git py39-iocage avahi-app netatalk3
 ```
 
-(Substitute the current Samba 4.x version as available in pkg. As of
-2026-05, samba422 is current.)
+Notes:
+- **samba422**: substitute the current Samba 4.x version as available in
+  pkg (2026-05: samba422 is current).
+- **py39-iocage**: required for jail re-discovery in 4.10. The legacy
+  iocage-managed datasets under `jeff/iocage` will be re-imported as
+  Bastille adoption is the long-term path (see iteration plan #9), but
+  for migration parity we keep iocage running on FreeBSD 15.
+- **avahi-app**: needed for SMB/AFP mDNS advertising (so Macs see
+  `rango._smb._tcp.local`).
+- **netatalk3**: only if AFP shares are needed alongside SMB. Drop if
+  no AFP clients exist (likely the case — Apple deprecated AFP in
+  macOS 11). Skip unless verified needed.
 
 ### 4.2 Recreate groups
 
@@ -612,40 +691,63 @@ su - io -c whoami   # should not prompt for password if you authed already
 # or test SSH login with old password from a different machine
 ```
 
-### 4.5 Import Samba private DB (preserves SMB SIDs and hashes)
+### 4.5 Import Samba state (preserves SMB SIDs and hashes)
+
+Source on backup: `/jeff/migration-2026-05/samba-state/` (TrueNAS used
+`/var/db/system/samba4/` — non-default path).
+
+Destination on FreeBSD 15: `/var/db/samba4/` (Samba 4.22 default).
 
 ```sh
-# Stop Samba if it auto-started
+# Stop Samba if it auto-started after pkg install
 service samba_server stop 2>/dev/null
 
-# Locate FreeBSD 15 Samba's private dir
-testparm -s 2>/dev/null | grep -i "private dir" || true
-# Default for Samba 4.22 on FreeBSD: /var/db/samba4/private
+# Confirm destination Samba's expected private dir
+testparm -s 2>/dev/null | grep -i "private dir" || echo "default: /var/db/samba4/private"
 
-# Restore from backup
+# Restore the private dir (passdb, secrets, netlogon)
 mkdir -p /var/db/samba4/private
-cp -a /jeff/migration-2026-05/samba-private/. /var/db/samba4/private/
+cp -a /jeff/migration-2026-05/samba-state/private/. /var/db/samba4/private/
 
-# Verify tdbs landed
+# Restore the top-level state tdbs (group_mapping, account_policy,
+# share_info, winbindd_idmap). Skip registry.tdb — Phase 4.6 writes
+# shares as flat sections instead.
+for tdb in group_mapping.tdb account_policy.tdb share_info.tdb winbindd_idmap.tdb; do
+  cp -a "/jeff/migration-2026-05/samba-state/${tdb}" "/var/db/samba4/${tdb}" 2>/dev/null
+done
+
+# Verify the SID-bearing tdbs landed
 ls -la /var/db/samba4/private/passdb.tdb /var/db/samba4/private/secrets.tdb
 
-# Permissions
+# Permissions (Samba refuses to start if these are wrong)
 chown -R root:wheel /var/db/samba4/private
 chmod 600 /var/db/samba4/private/*.tdb
 chmod 700 /var/db/samba4/private
+chmod 600 /var/db/samba4/*.tdb 2>/dev/null
 ```
 
-### 4.6 Hand-write smb4.conf
+### 4.6 Hand-write smb4.conf with flat share sections
 
-Reference: `/jeff/migration-2026-05/smb-config-final.txt` and the
-copied `smb4-conf-d/`.
+Reference: `/jeff/migration-2026-05/smb-shares-truth.txt` (middleware
+DB extract) and `/jeff/migration-2026-05/smb4.conf.truenas-generated`.
+
+**Decision (2026-05-09):** explicit flat sections, NOT
+`include = registry`. Reasons: auditable in git, diffable, no binary
+tdb dependency for share definitions. The imported `registry.tdb` from
+4.5 is reference-only.
+
+**NetBIOS naming:** TrueNAS used `workgroup = LOCAL` and
+`netbios name = mr_rango` (lowercase). Existing client mounts are
+written against `\\MR_RANGO\<share>` — Samba is case-insensitive on
+NetBIOS so either case works. Keep `mr_rango` for continuity.
 
 Create `/usr/local/etc/smb4.conf`:
 
 ```ini
 [global]
-    workgroup = MR_RANGO
-    netbios name = MR_RANGO
+    workgroup = LOCAL
+    netbios name = mr_rango
+    netbios aliases = MR_RANGO
     server string = rango
     server role = standalone server
 
@@ -661,56 +763,110 @@ Create `/usr/local/etc/smb4.conf`:
 
     # Logging
     log file = /var/log/samba4/log.%m
-    max log size = 1000
+    max log size = 2048
     log level = 1
+    logging = syslog@1 file
 
-    # SMB protocol
+    # SMB protocol — match TrueNAS hardening
     server min protocol = SMB2
-    server signing = auto
-    smb encrypt = desired
+    max protocol = SMB3
+    server signing = mandatory
+    smb encrypt = required
 
     # Performance
-    socket options = TCP_NODELAY IPTOS_LOWDELAY
+    socket options = TCP_NODELAY IPTOS_LOWDELAY SO_RCVBUF=65536 SO_SNDBUF=65536
     use sendfile = yes
+    min receivefile size = 16384
     aio read size = 16384
     aio write size = 16384
+    large readwrite = yes
+    deadtime = 15
 
-[homes]
-    comment = User home
-    browseable = no
+    # Locking — TrueNAS settings
+    oplocks = yes
+    kernel oplocks = yes
+    posix locking = no
+    strict allocate = yes
+    sync always = yes
+
+    # Disable NFS-style ACE conversion under fruit (TrueNAS default)
+    fruit:nfs_aces = no
+
+    # Username map (carry over from TrueNAS — empty file is fine)
+    username map = /usr/local/etc/smbusername.map
+
+    # Misc
+    load printers = no
+    printing = bsd
+    disable spoolss = yes
+    dns proxy = no
+    restrict anonymous = 2
+    obey pam restrictions = yes
+    unix extensions = no
+    bind interfaces only = yes
+    interfaces = lo0 igb0   # adjust if NIC name differs after install
+
+# ----- home: PRIVATE_DATASETS preset -----
+# Per-user subdirectories. Each user sees only their own /jeff/home/<user>.
+[home]
+    path = /jeff/home/%U
+    browseable = yes
     read only = no
+    valid users = io, jo, po, vo, git, @ostens
     inherit acls = yes
     inherit owner = yes
-    valid users = %S
+    create mask = 0664
+    directory mask = 0775
 
-# Add other shares per the original smb-config-final.txt — examples below.
-# Read the captured testparm output and translate share-by-share.
+# ----- video: MULTI_PROTOCOL_NFS preset -----
+# Coexists with NFS access; avoids Apple-only attributes.
+[video]
+    path = /jeff/video
+    browseable = yes
+    read only = no
+    valid users = @ostens, @engineers, @media
+    inherit acls = yes
+    inherit owner = yes
+    # No fruit module — keeps NFS clients happy.
 
-# Example projects share (verify against captured config):
-# [projects]
-#     path = /jeff/home/projects
-#     browseable = yes
-#     read only = no
-#     valid users = @ostens, @engineers
-#     inherit acls = yes
-
-# Example media share for jeff/video (if shared):
-# [video]
-#     path = /jeff/video
-#     browseable = yes
-#     read only = yes
-#     valid users = @ostens, @media
-#     inherit acls = yes
+# ----- timemachines: ENHANCED_TIMEMACHINE preset -----
+# Apple Time Machine over SMB. Per-user subdirectories under
+# /jeff/timemachines/<user>/. Apple's TM client expects the share root
+# to contain the per-user dir.
+[timemachines]
+    path = /jeff/timemachines/%U
+    browseable = yes
+    read only = no
+    valid users = io, jo, po, vo
+    inherit acls = yes
+    inherit owner = yes
+    # Apple-specific VFS modules
+    vfs objects = zfsacl fruit streams_xattr
+    fruit:time machine = yes
+    fruit:time machine max size = 1T
+    fruit:metadata = stream
+    fruit:resource = stream
+    fruit:posix_rename = yes
+    fruit:veto_appledouble = no
+    # TM requires durable handles + posix locking off
+    durable handles = yes
+    kernel oplocks = no
+    posix locking = no
+    strict locking = no
+    # Required by macOS for stable TM operation
+    ea support = yes
 ```
 
-Test the config:
+Test the config (Samba 4.22 has `testparm` in `/usr/local/bin/`):
 
 ```sh
 testparm -s
 ```
 
 **Expect:** no errors, no warnings about unknown parameters, share list
-matches what you wrote.
+shows `home`, `video`, `timemachines`. If `testparm` complains about
+`interfaces = ... igb0`, list actual interfaces with `ifconfig` and
+substitute.
 
 ### 4.7 Enable services in rc.conf
 
@@ -744,8 +900,44 @@ pdbedit -L
 ```
 
 **Expect:** four users (io, jo, po, vo) with the same SIDs as the
-original `pdbedit -L` output captured in 0.7. If SIDs differ, the tdb
-import did not take effect — re-check 4.5.
+captured baseline (`/jeff/migration-2026-05/preflight/` notes from
+Phase 0.5: `S-1-5-21-1802559556-342626866-2594444652-{1001,1002,1004,1012}`
+for io, jo, po, vo respectively). If SIDs differ, the tdb import did
+not take effect — re-check 4.5.
+
+### 4.10 Re-discover iocage jails
+
+```sh
+# iocage scans the existing jeff/iocage/* datasets and rebuilds its DB
+iocage activate jeff
+iocage list
+```
+
+**Expect:** `plausible` and `zed-agent-1` listed as STOPPED. Start
+each:
+
+```sh
+iocage start plausible
+iocage start zed-agent-1
+iocage list   # both should show RUNNING with their JIDs
+jls
+```
+
+If a jail's RELEASE base (e.g. `13.5-RELEASE`) is incompatible with
+FreeBSD 15's host kernel ABI, the jail will fail to start. FreeBSD 15
+generally maintains backward jail-ABI for one major version (so 14.x
+jails work; 13.x jails *may* need `compat10x`/`compat11x`/`compat12x`/
+`compat13x` packages or a release upgrade inside the jail). For
+rango's jails:
+
+| Jail | Base RELEASE | Action if start fails |
+|---|---|---|
+| `plausible` | check `iocage list -l` | `pkg install -y compat13x compat12x` on host |
+| `zed-agent-1` | 13.5-RELEASE | install compat libs, or upgrade inside jail to 14.x |
+
+If a jail won't start cleanly, mark it as a follow-up rather than a
+Phase 4 blocker. The jail's data on jeff is intact; it can be revived
+later or migrated to Bastille (per iteration plan #9).
 
 **Halt and report. User must verify a Mac client can connect before
 Phase 5.**
@@ -867,27 +1059,43 @@ zfs destroy jeff@imported-*
 
 ---
 
-## Appendix A — Pre-migration cleanup (standalone, BEFORE Phase 1)
+## Appendix A — Optional teardown (NOT part of the migration plan)
 
-If user has not already run these, they may be run as part of
-preflight cleanup. Each is destructive.
+The current scope (revised 2026-05-09) **preserves** both
+`jeff/timemachines/*` and `jeff/iocage/*`. These commands are kept
+here for reference only — run them only if a future cleanup decides
+to drop one or both.
 
 ### A.1 Drop all iocage jails
 
+iocage state DB on TrueNAS is often out of sync with `jls` (the
+Python wrapper doesn't see jails started via WebUI middleware). Use
+`jail -r <jid>` for stop, then ZFS for cleanup:
+
 ```sh
-iocage list                        # confirm what's there
-iocage stop -a                     # stop all running
-iocage destroy -f plausible
-iocage destroy -f zed-agent-1
-zfs list -r jeff/iocage            # what's still there?
-zfs destroy -r jeff/iocage         # destroy all iocage datasets
+jls   # find JIDs of running jails (see Phase 0.4 for current values)
+jail -r 3   # plausible (use actual JID from jls)
+jail -r 5   # zed-agent-1
+jls         # confirm both gone
+
+# ZFS-level cleanup — handles everything iocage did or didn't manage
+umount /mnt/jeff/iocage/jails/plausible/root 2>/dev/null
+umount /mnt/jeff/iocage/jails/zed-agent-1/root 2>/dev/null
+zfs destroy -r jeff/iocage
 ```
 
 ### A.2 Drop all time machines
 
+The TrueNAS WebUI cleanly: Sharing → SMB → delete every share under
+`/mnt/jeff/timemachines/*`, then in shell:
+
 ```sh
-# In TrueNAS UI: Sharing → SMB → delete every share under
-# /mnt/jeff/timemachines/* — OR:
+zfs destroy -r jeff/timemachines
+```
+
+Or CLI-only (skips WebUI; disconnects any in-flight TM clients):
+
+```sh
 service samba_server stop
 zfs destroy -r jeff/timemachines
 service samba_server start
@@ -920,8 +1128,8 @@ Only Phase 6.1 (boot-pool destroy) is irreversible w.r.t. the rollback.
 - Replicate to remote (no offsite was specified)
 - Configure email alerts
 - Set up monitoring / Grafana / Prometheus
-- Reconstruct iocage jails on the new system (decision: dropped)
-- Reconstruct Time Machine SMB shares (decision: dropped)
+- Migrate iocage jails to Bastille (long-term plan per iteration plan
+  decision #9 — for migration parity, jails stay on iocage)
 
 If any of these are needed later, they are post-migration enhancements,
 not blockers.
