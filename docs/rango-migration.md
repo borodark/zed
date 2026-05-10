@@ -88,9 +88,17 @@ against. Halt if anything diverges.
 
 ### 0.0 Verify CPU and RAM meet FreeBSD 15 requirements
 
-Rango is older hardware. FreeBSD 15.0-RELEASE is amd64-only and
-GENERIC kernel assumes a baseline of x86-64 features. Several Samba
-4.22 + ZFS optimizations need AES-NI and SSE4.2 to be cheap.
+**FreeBSD 15.0's amd64 baseline is x86-64-v1 (SSE2 only)** — verified
+2026-05-09 against the [FreeBSD 15.0 Hardware
+Notes](https://www.freebsd.org/releases/15.0R/hardware/) ("Release
+media is expected to work on all x86-64 machines with at least 256
+MiB of RAM"). The 15.0 release notes mention no CPU baseline change.
+Practical consequence: any 64-bit Intel or AMD CPU since ~2003 boots
+FreeBSD 15. The mandatory check is just `amd64`.
+
+Rango (X5482, Penryn 2008) sits well above the baseline but lacks
+several performance accelerators that newer Samba/ZFS code paths
+expect. We record those gaps so the install isn't surprising.
 
 ```sh
 # Architecture and basic CPU
@@ -112,26 +120,29 @@ sysctl hw.usermem | awk '{ printf "usermem: %.1f GB\n", $2 / 1073741824 }'
 
 # Boot mode (UEFI vs legacy)
 sysctl machdep.bootmethod
+
+# Boot dmesg has the authoritative feature list (sysctl can come up empty
+# under TRUENAS kernel)
+cat /var/run/dmesg.boot | grep -iE "CPU:|Origin|Features|VT-x" | head -10
 ```
 
-**Required (HALT if missing):**
+**HALT if missing:**
 
-| Requirement | Check | Why |
-|---|---|---|
-| `uname -m` = `amd64` | mandatory | FreeBSD 15.0 is amd64-only |
-| `SSE4.2` in cpu_features2 | mandatory | ZFS checksum acceleration; Samba |
-| `POPCNT` in cpu_features2 | mandatory | x86-64-v2 baseline |
-| ≥ 8 GB physmem | mandatory | ZFS ARC for 21T raidz3 + Samba |
-| ≥ 4 logical CPUs | strongly recommended | Samba multi-client + ZFS scrub |
+| Requirement | Why |
+|---|---|
+| `uname -m` = `amd64` | FreeBSD 15.0 is amd64-only (i386 dropped) |
+| ≥ 4 GB physmem | ZFS won't be happy below this for raidz3 of any size |
 
-**Strongly recommended (note absence, do not halt):**
+**Strongly recommended for performance (record absence, do not halt):**
 
-| Feature | Check | Penalty if missing |
-|---|---|---|
-| `AESNI` in cpu_features2 | recommended | Samba SMB3 encryption falls back to software (~3–5× slower) |
-| `RDRAND` | recommended | Slower entropy seeding at boot |
-| `AVX` / `AVX2` | nice | Some openssl/Samba code paths; not critical |
-| 16 GB+ physmem | nice | Better ZFS ARC hit rate on `jeff/home` |
+| Feature | Penalty if missing |
+|---|---|
+| `SSE4.2` + `POPCNT` (x86-64-v2) | ZFS Edon-R checksum path unavailable; some Samba accelerated paths fall back |
+| `AESNI` | SMB3 encryption is software-only (~100 MB/s ceiling instead of line rate) |
+| `RDRAND` | Slower entropy seeding at boot |
+| `AVX` / `AVX2` | Some openssl/Samba code paths slower |
+| ≥ 16 GB physmem | Larger ZFS ARC = better hit rate on `jeff/home` |
+| VT-x enabled in BIOS | Required only if running bhyve later (not needed for this NAS migration) |
 
 **Process:** record the actual `hw.model` string and the cpu_features
 flags into `/mnt/jeff/migration-2026-05/preflight/cpu-info.txt` so the
@@ -145,30 +156,39 @@ mkdir -p /mnt/jeff/migration-2026-05/preflight
   uname -a
   sysctl hw.model hw.machine hw.ncpu hw.clockrate
   echo
-  echo "=== CPU features ==="
+  echo "=== CPU features (sysctl) ==="
   sysctl machdep.cpu_features machdep.cpu_features2 \
          machdep.cpu_stdext_features machdep.cpu_stdext_features2 2>/dev/null
+  echo
+  echo "=== CPU features (boot dmesg, authoritative) ==="
+  cat /var/run/dmesg.boot | grep -iE "CPU:|Origin|Features|VT-x" | head -10
   echo
   echo "=== Memory ==="
   sysctl hw.physmem hw.usermem hw.realmem
   echo
   echo "=== Boot ==="
   sysctl machdep.bootmethod 2>/dev/null
-  dmesg | grep -iE "CPU:|Features|FreeBSD/SMP|UEFI" | head -20
 } > /mnt/jeff/migration-2026-05/preflight/cpu-info.txt
 
 cat /mnt/jeff/migration-2026-05/preflight/cpu-info.txt
 ```
 
-**Halt and surface to user if any mandatory check fails.** Specifically:
+**Confirmed for rango (verified 2026-05-09 over SSH):**
 
-- If CPU lacks `SSE4.2` or `POPCNT`: FreeBSD 15 GENERIC may run but is
-  not officially supported on x86-64-v1 only. User decides whether to
-  proceed with possible kernel panics under load.
-- If physmem < 8 GB: ZFS ARC will be cramped and Samba will swap. User
-  decides whether to upgrade RAM before proceeding.
-- If no AES-NI: SMB3 encryption will be CPU-bound. Acceptable for a
-  household NAS; flag for visibility.
+| Check | Value | Verdict |
+|---|---|---|
+| Architecture | amd64 | ✓ HALT condition cleared |
+| CPU | Intel Xeon X5482 @ 3.20 GHz (Penryn 2008, 4 cores) | will boot FreeBSD 15 |
+| RAM | 64 GiB | ✓ generous |
+| Boot | UEFI | ✓ |
+| SSE2 / SSE3 / SSSE3 / SSE4.1 | yes | baseline + extras |
+| **SSE4.2 / POPCNT** | **no** | x86-64-v1 only — perf-only impact |
+| **AES-NI** | **no** (`aesni0: No AES or SHA support`) | SMB3 encryption software-bound |
+| AVX / AVX2 / RDRAND | no | minor perf impact |
+| VT-x | disabled in BIOS | irrelevant (bhyve not in scope) |
+
+Rango is **cleared to install FreeBSD 15.0** with the noted performance
+caveats. None are blockers for a household NAS workload.
 
 ### 0.1 Verify ada4 is unclaimed
 
