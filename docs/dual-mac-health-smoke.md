@@ -150,6 +150,37 @@ datasets gone (only the green sentinel from R4 remains).
 
 ---
 
+## F1 — `:beam_ping` over real distribution
+
+Both hosts' probes hit the `:beam_ping` branch of `DefaultChecker`
+across a live distribution link rather than the synthetic
+`:"nonexistent@127.0.0.1"` of R3. Each host's check pings the
+*other* cluster member's BEAM node:
+
+| Host | Probes |
+|---|---|
+| mac-248 | `{:beam_ping, %{node: :"zed-agent@192.168.0.247"}}` |
+| mac-247 | `{:beam_ping, %{node: :"zed-controller@192.168.0.248"}}` |
+
+```
+02:08:49.065 phase 2 (converge): all 2 hosts succeeded
+02:08:49.065 phase 2.5 (health): 2 hosts
+02:08:49.071 phase 2.5 (health): all hosts healthy
+RESULT: {:ok, %{
+  mac_248: {:ok, [{"dataset:create:health-smoke-beam-1778551728", :ok}]},
+  mac_247: {:ok, [{"dataset:create:health-smoke-beam-1778551728", :ok}]}
+}}
+```
+
+Phase 2.5 wall time **6 ms** (R4's TCP-loopback was 4 ms; the
+2 ms delta is two real `net_adm.ping/1` round-trips). Both probes
+returned `:pong`. The other DefaultChecker code path is now
+exercised end-to-end.
+
+**Run-id:** `beam-1778551728`.
+
+---
+
 ## Branches not yet covered
 
 - **External rollback signal mid-flight** (`Zed.Converge.Health.signal_rollback/1`,
@@ -158,13 +189,7 @@ datasets gone (only the green sentinel from R4 remains).
   `Cluster.run_health_phase/4` yet — there's no current path for an
   operator-driven abort during health checks. Worth following up
   once a real operator UX appears.
-- **`:beam_ping` over real distribution.** R3 covered the
-  unreachable-node failure case in isolation; the success case
-  against a real connected node was not exercised in R4/R5 (we used
-  TCP-only to keep apparatus inert). The DefaultChecker code is
-  identical to R3's invocation, so the risk is low; still worth a
-  one-line smoke later.
-- **Real app payload.** R4/R5 used a synthetic `app` node whose
+- **Real app payload.** R4/R5/F1 used a synthetic `app` node whose
   only purpose was carrying the `:health` list; no release was
   actually deployed. End-to-end with a release-listening-on-its-own-port
   is the natural next step but is gated on release-engineering work,
