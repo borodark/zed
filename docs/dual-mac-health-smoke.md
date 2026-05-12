@@ -181,14 +181,48 @@ exercised end-to-end.
 
 ---
 
+## F2 — `signal_rollback/1` mid-flight (third spec branch)
+
+Single-process verification on dev host (no macs needed — the
+test is about orchestrator semantics, not distribution). A custom
+`SlowChecker` sleeps 200 ms per probe and unconditionally returns
+`:ok`; the test grabs the orchestrator pid via a new `:on_start`
+opt on `Health.run/2`, then calls `signal_rollback/1` 30 ms in,
+while every worker is still mid-sleep.
+
+```
+t+0 ms   got pid #PID<0.342.0>
+t+30 ms  signal_rollback
+22:32:38 [Health] external rollback signal latched
+t+205 ms RESULT: {:error, :rolled_back, %{host_a: :failed, host_b: :failed}}
+ok :: NoLatePromotionAfterRollback held — no :passed recorded
+```
+
+Both workers returned `:ok` after the signal latched, but the
+`handle_cast({:check_complete, _, :passed}, …)` guard read the
+rollback flag in the same callback that records the outcome
+(per the moduledoc comment about realising the TLA+
+`NoLatePromotionAfterRollback` invariant in code). The unrecorded
+outcomes pass through `drain_for_rollback/1` as `nil → :failed`,
+matching the spec branch.
+
+Code surgery:
+- `Health.run/2` gains an `:on_start` opt accepting a `(pid -> any())`
+  callback. Test-only — no production caller needs it. Five lines.
+- No `Cluster.signal_health_rollback` wrapper added — `run_health_phase/4`
+  doesn't currently have an upstream rollback source to plumb in.
+  Add when (if) one appears.
+
+**Run-id:** `rollback-1778554358` (informal — local run, no ZFS state).
+
+---
+
 ## Branches not yet covered
 
-- **External rollback signal mid-flight** (`Zed.Converge.Health.signal_rollback/1`,
-  resolving to `{:error, :rolled_back, …}`). Requires a hook to grab
-  the in-flight orchestrator pid from outside. Not wired into
-  `Cluster.run_health_phase/4` yet — there's no current path for an
-  operator-driven abort during health checks. Worth following up
-  once a real operator UX appears.
+- **Wiring `signal_rollback` into `Cluster.run_health_phase/4`** —
+  protocol-level support exists and is verified; what's missing is
+  a real *caller* (operator abort UX, upstream-failure listener).
+  Speculative until one materialises.
 - **Real app payload.** R4/R5/F1 used a synthetic `app` node whose
   only purpose was carrying the `:health` list; no release was
   actually deployed. End-to-end with a release-listening-on-its-own-port

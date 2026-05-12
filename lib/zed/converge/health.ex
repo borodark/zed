@@ -56,10 +56,20 @@ defmodule Zed.Converge.Health do
     * `:run_timeout`     — outer timeout for the whole protocol (default 60_000)
     * `:checker`         — module implementing `Zed.Converge.Health.Checker`
                            (default `Zed.Converge.Health.DefaultChecker`)
+    * `:on_start`        — optional `(pid -> any())` callback invoked once
+                           the orchestrator is spawned. Lets tests grab
+                           the pid so they can drive `signal_rollback/1`
+                           mid-flight. Not used in production paths.
   """
   @spec run([{host, [check_spec]}], keyword()) :: result()
   def run(targets, opts \\ []) when is_list(targets) do
     {:ok, pid} = GenServer.start_link(__MODULE__, {targets, opts, self()})
+
+    case Keyword.get(opts, :on_start) do
+      nil -> :ok
+      fun when is_function(fun, 1) -> fun.(pid)
+    end
+
     run_timeout = Keyword.get(opts, :run_timeout, @default_run_timeout)
 
     receive do
