@@ -217,17 +217,94 @@ Code surgery:
 
 ---
 
+## F3 — Real app payload (and a design finding)
+
+Each mac ran an Elixir one-liner opening `:gen_tcp.listen(14040, …)`
+to stand in for a deployed app. The first attempt (`HealthSmokeApp`)
+bound to `127.0.0.1` and probed `127.0.0.1:14040` on each host.
+Green path passed. Then mac-247's listener was killed; the "red"
+run **still returned green**.
+
+Diagnosis:
+
+`Zed.Converge.Health` spawns workers via `Task.start/1`, which run on
+the **same node as the orchestrator GenServer** — the controller
+(mac-248). Each worker invokes `checker.check(host, type, opts, …)`
+where `host` is only a label used to key the outcome map; the
+probe's actual destination comes from `opts`. With both IRs
+pointing at `127.0.0.1:14040`, both workers pinged the *controller's*
+loopback. Mac-247's listener never entered the picture.
+
+This is not a regression; the spec says nothing about *where* a
+probe physically runs. R4/R5/F1 happened to be accidentally
+correct: R4's `127.0.0.1:22` was open on both macs (sshd
+everywhere); R5's `127.0.0.1:1` was closed on both macs; F1's
+`:beam_ping` target carried a real cross-host node atom, so it
+genuinely traversed distribution.
+
+### F3 v2 — fix the probe targets
+
+Listeners rebound on `0.0.0.0:14040`. Each host's IR probes its
+**LAN IP**, so the controller (now correctly executing both probes)
+reaches the right machine each time.
+
+**Green** (`app-v2-1778592887`):
+```
+13:34:48.001 phase 2.5 (health): 2 hosts
+13:34:48.005 phase 2.5 (health): all hosts healthy
+RESULT: {:ok, %{mac_248: {:ok, …}, mac_247: {:ok, …}}}
+```
+
+**Red** (`app-v2-1778592904`, mac-247 listener killed):
+```
+13:35:04.154 phase 2.5 (health): health_failed, rolling back:
+             %{mac_248: :passed, mac_247: :failed}
+13:35:04.155 rollback mac_248: zfs destroy …
+13:35:04.166 rollback mac_247: zfs destroy …
+RESULT: {:error, :health_failed,
+         %{health_outcomes: %{mac_248: :passed, mac_247: :failed},
+           rolled_back: %{mac_248: [ok: ""], mac_247: [ok: ""]}}}
+```
+
+End-to-end **117 ms** red, **4 ms** Phase 2.5 green.
+
+### Design finding (open question)
+
+Per-host outcomes are recorded, but probes always run from the
+controller. Two valid models:
+
+1. **Convention.** Document that probe targets must be *reachable
+   from the controller* and *specific to the host* (LAN IP,
+   registered DNS, `:beam_ping` against the host's node atom).
+   Loopback targets in multi-host coordinated converge are an
+   operator error. Cost: a docstring + a runtime warning at IR
+   validation when a multi-host IR contains loopback probes.
+
+2. **Routing.** Have `spawn_worker/6` RPC the check to the host's
+   BEAM node, so probes execute on the right physical machine and
+   loopback IS the right thing. Cost: an `:rpc.call` per probe, a
+   dependency on the host having a live agent (which it must have
+   to receive the converge RPC anyway), and an additional failure
+   mode (RPC timeout → probe failure).
+
+Model 2 is more permissive (loopback works as authors expect) but
+adds a hop. Model 1 is simpler. **Recommendation: ship Model 1
+(doc + warn) now; revisit if a real operator UX request lands.**
+
+---
+
 ## Branches not yet covered
 
 - **Wiring `signal_rollback` into `Cluster.run_health_phase/4`** —
   protocol-level support exists and is verified; what's missing is
   a real *caller* (operator abort UX, upstream-failure listener).
   Speculative until one materialises.
-- **Real app payload.** R4/R5/F1 used a synthetic `app` node whose
-  only purpose was carrying the `:health` list; no release was
-  actually deployed. End-to-end with a release-listening-on-its-own-port
-  is the natural next step but is gated on release-engineering work,
-  not the health protocol itself.
+- **A real release with its actual `Endpoint`.** F3 uses a tiny
+  `:gen_tcp.listen/2` shim. The zedweb release boots but its Phoenix
+  endpoint is gated behind a `zed serve` verb that isn't yet wired
+  in the release. Standing up an actual release-managed endpoint is
+  release-engineering work tracked in `specs/converge-jail-executor.md`,
+  not a health-protocol gap.
 
 ---
 
