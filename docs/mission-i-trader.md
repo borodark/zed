@@ -168,12 +168,81 @@ Clean exit; `epmd -names` shows only `zed-agent` after.
 
 ---
 
+## M-I.3 — Promote bash to zed DSL verbs
+
+**New verbs:**
+- `tarfs name do … end` — declares a `tarfs(5)` mount of a tar
+  artifact. Config keys: `tar_path`, `mount`. Idempotent; the
+  executor parses live `mount` output and skips if the requested
+  source already covers the mountpoint.
+- `file path do … end` — declares a managed text file with optional
+  `mode`, `owner`, `group`, and inline `content`. Content-comparing
+  rewrite — no-op when on-disk matches, atomic write otherwise.
+
+**IR + executor changes:** `lib/zed/ir.ex` gets `tarfs_mounts:` and
+`files:` fields; `Diff` emits unconditional `:create` entries (the
+executor enforces idempotency); `Plan` slots tarfs at priority 2
+(after datasets) and file at priority 6 (after apps); `Step`'s
+typespec extended with `:tarfs|:file` types and `:mount|:write`
+actions.
+
+**Mission.I example module** at `lib/zed/examples/mission_i.ex`
+composes 4 datasets + 1 tarfs mount + 1 env file under one
+`host :mac_247` block. The same artifact + state layout the M-I.2
+bash script produces, expressed declaratively.
+
+**Latent bug surfaced & fixed.** The compiler had been warning
+about `Cluster.do_coordinated_converge/2`'s catch-all `{:error, _}`
+clause being unreachable because `prepare_all/1` returns a 3-tuple
+`{:error, :prepare_failed, failures}`. M-I.3's first live converge
+triggered that exact path (ZFS-permission-denied snapshot), so the
+clause shape was corrected. Pattern: 3-tuple match.
+
+**ZFS delegation needed.** Datasets created via `doas zfs create`
+in M-I.2 weren't `zfs allow`-ed for `io`, so the agent couldn't
+snapshot them during prepare. Added a one-doas script
+(`/tmp/mi3-delegate-zfs.sh`) granting create/destroy/snapshot/
+mount/rollback/userprop/etc. on `zroot/zed`. After delegation, the
+agent runs zfs operations natively without per-call doas.
+
+### Live result, first pass
+```
+== run: converge_coordinated ==
+phase 1 (prepare): 1 hosts ready
+phase 2 (converge): all 1 hosts succeeded
+result: {:ok, %{mac_247: {:ok, [
+  {"file:write:/var/db/exmc-trial/env",
+   {:file_written, "/var/db/exmc-trial/env"}},
+  {"tarfs:mount:exmc_release",
+   {:tarfs_already_mounted, "/opt/exmc"}},
+  {"dataset:set:zed:mountpoint", :ok},
+  {"dataset:set:zed/exmc-trial:mountpoint", :ok}
+]}}}
+```
+
+### Second pass — full idempotency
+```
+{"file:write:/var/db/exmc-trial/env",
+ {:file_already_current, "/var/db/exmc-trial/env"}},
+{"tarfs:mount:exmc_release",
+ {:tarfs_already_mounted, "/opt/exmc"}},
+…
+```
+
+### Cosmetic over-eagerness
+Two `dataset:set:*:mountpoint` ops fire every pass because the diff
+compares the IR's atom `:none` against ZFS's string `"none"` and
+sees mismatch. Zero-cost ZFS property write to the same value;
+worth tightening in the diff layer (cast atom→string before compare)
+but not blocking.
+
+---
+
 ## What's left for Mission I
 
 | Phase | Scope |
 |---|---|
-| **M-I.3** | Promote the M-I.2 bash script to zed DSL verbs: `:tarfs` artifact, `nullfs` mount, `:rcd` service, env-file emit, graceful BEAM stop. Convert `/tmp/mi-2-setup.sh` to a `defmodule Mission.I do … end` and run via `zed converge`. |
-| **M-I.4** | `zed converge` end-to-end with Phase 2.5 health: `:beam_ping` against `trial@mac` + `:tcp` against the Bandit endpoint at 4000. Rollback story: replace with a deliberately broken tar; `zfs rollback` restores the prior artifact dataset; Phase 2.5 health verifies the prior release is back up. |
+| **M-I.4** | Phase 2.5 health: `:beam_ping` against `trial@mac` + `:tcp` against Bandit at 4000. Service start (rc.d unit emit + `service exmc-trial start`) lands here. Rollback story: deploy a broken tar; `zfs rollback` restores prior artifact; Phase 2.5 verifies prior release came back up. |
 | **M-I.5** | Doc + commit + **β tag**. |
 
 ---
