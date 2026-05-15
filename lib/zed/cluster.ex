@@ -240,7 +240,7 @@ defmodule Zed.Cluster do
           }}
         end
 
-      {:error, _} = err ->
+      {:error, _, _} = err ->
         Logger.error("[Zed.Cluster] phase 1 (snapshot) failed: #{inspect(err)}")
         err
     end
