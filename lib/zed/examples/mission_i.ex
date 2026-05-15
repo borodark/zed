@@ -58,6 +58,23 @@ defmodule Zed.Examples.MissionI do
         EXMC_BEAM_LOG=/var/db/exmc-trial/logs/beam.log
         """
       end
+
+      # M-I.4a: declare the app + health probes so Phase 2.5 fires
+      # after every coordinated converge.  The app entry is otherwise
+      # informational in this iteration (deploy_release is a no-op
+      # because the artifact is already on disk via the tarfs mount);
+      # the :health list is what drives `Zed.Converge.Health`.
+      app :exmc_trial do
+        node_name :"trial@mac"
+        cookie {:env, "RELEASE_COOKIE"}
+        env_file "/var/db/exmc-trial/env"
+        # Probes run on the controller (per F3 finding in
+        # docs/dual-mac-health-smoke.md) — must target reachable
+        # per-host addresses, not loopback.  beam_ping omitted because
+        # the trader uses sname (trial@mac) while the controller uses
+        # long names; EPMD doesn't bridge those.
+        health :tcp, host: "192.168.0.247", port: 4000
+      end
     end
 
     snapshots do
