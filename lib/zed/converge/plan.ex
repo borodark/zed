@@ -128,6 +128,38 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
+  defp expand_to_steps(%Diff{resource: %{type: :tarfs} = node, action: :create}, _pool) do
+    [
+      %Step{
+        id: "tarfs:mount:#{node.id}",
+        type: :tarfs,
+        action: :mount,
+        args: %{
+          name: node.id,
+          tar_path: node.config[:tar_path],
+          mount: node.config[:mount]
+        }
+      }
+    ]
+  end
+
+  defp expand_to_steps(%Diff{resource: %{type: :file} = node, action: :create}, _pool) do
+    [
+      %Step{
+        id: "file:write:#{node.id}",
+        type: :file,
+        action: :write,
+        args: %{
+          path: node.id,
+          content: node.config[:content] || "",
+          mode: node.config[:mode],
+          owner: node.config[:owner],
+          group: node.config[:group]
+        }
+      }
+    ]
+  end
+
   defp expand_to_steps(_, _pool), do: []
 
   # The cluster artifact lives under <base>/zed/cluster/. Default
@@ -299,15 +331,17 @@ defmodule Zed.Converge.Plan do
         dataset: 0,
         snapshot: 1,
         cluster_config: 2,
+        tarfs: 2,
         jail: 3,
         jail_pkg: 4,
         jail_mount: 5,
         app: 6,
+        file: 6,
         jail_svc: 7,
         service: 8
       }
 
-      action_priority = %{install: 0, create: 1, start: 2, restart: 3}
+      action_priority = %{install: 0, create: 1, start: 2, restart: 3, mount: 1, write: 1}
 
       {
         Map.get(type_priority, step.type, 99),

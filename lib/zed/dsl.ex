@@ -69,6 +69,8 @@ defmodule Zed.DSL do
       Module.register_attribute(__MODULE__, :zed_jails, accumulate: true)
       Module.register_attribute(__MODULE__, :zed_zones, accumulate: true)
       Module.register_attribute(__MODULE__, :zed_clusters, accumulate: true)
+      Module.register_attribute(__MODULE__, :zed_tarfs_mounts, accumulate: true)
+      Module.register_attribute(__MODULE__, :zed_files, accumulate: true)
       Module.put_attribute(__MODULE__, :zed_deploy_name, nil)
       Module.put_attribute(__MODULE__, :zed_pool, nil)
       Module.put_attribute(__MODULE__, :zed_snapshot_config, %{before_deploy: false, keep: 5})
@@ -87,7 +89,17 @@ defmodule Zed.DSL do
       @zed_pool unquote(pool)
 
       import Zed.DSL,
-        only: [dataset: 2, app: 2, jail: 2, zone: 2, snapshots: 1, cluster: 2, host: 3]
+        only: [
+          dataset: 2,
+          app: 2,
+          jail: 2,
+          zone: 2,
+          snapshots: 1,
+          cluster: 2,
+          host: 3,
+          tarfs: 2,
+          file: 2
+        ]
 
       unquote(block)
     end
@@ -144,6 +156,61 @@ defmodule Zed.DSL do
   end
 
   @doc """
+  Declare a tar-archive filesystem mount. The artifact lives in a ZFS
+  dataset and is mounted via `tarfs(5)` (FreeBSD) at a read-only path.
+
+      tarfs :exmc_release do
+        tar_path "/var/zed/exmc/artifacts/exmc-mi1.tar"
+        mount "/opt/exmc"
+      end
+  """
+  defmacro tarfs(name, do: block) do
+    config = parse_kv_block(block)
+
+    quote do
+      config = unquote(Macro.escape(config))
+
+      config =
+        case @zed_current_host do
+          {host_name, _node, _pool} -> Map.put(config, :__host__, host_name)
+          nil -> config
+        end
+
+      @zed_tarfs_mounts {unquote(name), config}
+    end
+  end
+
+  @doc """
+  Declare a managed file on the host. Used for env files,
+  rc.d snippets, sysrc-only settings, etc.
+
+      file "/var/db/exmc-trial/env" do
+        mode 0o640
+        owner "io"
+        group "io"
+        content \"\"\"
+        RELEASE_COOKIE=exmc
+        ...
+        \"\"\"
+      end
+  """
+  defmacro file(path, do: block) do
+    config = parse_kv_block(block)
+
+    quote do
+      config = unquote(Macro.escape(config))
+
+      config =
+        case @zed_current_host do
+          {host_name, _node, _pool} -> Map.put(config, :__host__, host_name)
+          nil -> config
+        end
+
+      @zed_files {unquote(path), config}
+    end
+  end
+
+  @doc """
   Scope datasets and apps to a specific host node.
 
   ## Example
@@ -169,6 +236,12 @@ defmodule Zed.DSL do
         end),
         apps: Enum.filter(@zed_apps, fn {_name, config} ->
           Map.get(config, :__host__) == unquote(name)
+        end),
+        tarfs_mounts: Enum.filter(@zed_tarfs_mounts || [], fn {_name, config} ->
+          Map.get(config, :__host__) == unquote(name)
+        end),
+        files: Enum.filter(@zed_files || [], fn {_path, config} ->
+          Map.get(config, :__host__) == unquote(name)
         end)
       }}
       @zed_current_host nil
@@ -191,6 +264,8 @@ defmodule Zed.DSL do
     jails = Module.get_attribute(env.module, :zed_jails) |> Enum.reverse()
     zones = Module.get_attribute(env.module, :zed_zones) |> Enum.reverse()
     clusters = Module.get_attribute(env.module, :zed_clusters) |> Enum.reverse()
+    tarfs_mounts = Module.get_attribute(env.module, :zed_tarfs_mounts) |> Enum.reverse()
+    files = Module.get_attribute(env.module, :zed_files) |> Enum.reverse()
     hosts = Module.get_attribute(env.module, :zed_hosts) |> Enum.reverse()
     deploy_name = Module.get_attribute(env.module, :zed_deploy_name)
     pool = Module.get_attribute(env.module, :zed_pool)
@@ -201,7 +276,7 @@ defmodule Zed.DSL do
     {jails, inline_apps} = extract_inline_apps(jails)
     apps = apps ++ inline_apps
 
-    ir = build_ir(deploy_name, pool, datasets, apps, jails, zones, clusters, snapshot_config)
+    ir = build_ir(deploy_name, pool, datasets, apps, jails, zones, clusters, tarfs_mounts, files, snapshot_config)
 
     # Validate at compile time
     Zed.IR.Validate.run!(ir)
@@ -255,7 +330,7 @@ defmodule Zed.DSL do
             Enum.map(hosts, fn {host_name, host_config} ->
               pool = host_config.pool || base_ir.pool
 
-              # Build a per-host IR with only that host's datasets
+              # Build a per-host IR with only that host's datasets + tarfs + files
               host_datasets =
                 host_config.datasets
                 |> Enum.map(fn {path, config} ->
@@ -263,9 +338,25 @@ defmodule Zed.DSL do
                   %Zed.IR.Node{id: path, type: :dataset, config: config}
                 end)
 
+              host_tarfs =
+                (host_config[:tarfs_mounts] || [])
+                |> Enum.map(fn {nm, config} ->
+                  config = Map.delete(config, :__host__)
+                  %Zed.IR.Node{id: nm, type: :tarfs, config: config}
+                end)
+
+              host_files =
+                (host_config[:files] || [])
+                |> Enum.map(fn {path, config} ->
+                  config = Map.delete(config, :__host__)
+                  %Zed.IR.Node{id: path, type: :file, config: config}
+                end)
+
               host_ir = %{base_ir |
                 pool: pool,
-                datasets: host_datasets
+                datasets: host_datasets,
+                tarfs_mounts: host_tarfs,
+                files: host_files
               }
 
               {host_name, host_config.node, host_ir}
@@ -403,7 +494,7 @@ defmodule Zed.DSL do
 
   # --- Private: IR Construction ---
 
-  defp build_ir(name, pool, datasets, apps, jails, zones, clusters, snapshot_config) do
+  defp build_ir(name, pool, datasets, apps, jails, zones, clusters, tarfs_mounts, files, snapshot_config) do
     %Zed.IR{
       name: name,
       pool: pool,
@@ -412,12 +503,22 @@ defmodule Zed.DSL do
       jails: Enum.map(jails, &build_jail_node/1),
       zones: Enum.map(zones, &build_zone_node/1),
       clusters: Enum.map(clusters, &build_cluster_node/1),
+      tarfs_mounts: Enum.map(tarfs_mounts, &build_tarfs_node/1),
+      files: Enum.map(files, &build_file_node/1),
       snapshot_config: snapshot_config
     }
   end
 
   defp build_dataset_node({path, config}) do
     %Zed.IR.Node{id: path, type: :dataset, config: config}
+  end
+
+  defp build_tarfs_node({name, config}) do
+    %Zed.IR.Node{id: name, type: :tarfs, config: config}
+  end
+
+  defp build_file_node({path, config}) do
+    %Zed.IR.Node{id: path, type: :file, config: config}
   end
 
   defp build_app_node({name, config}) do

@@ -23,10 +23,39 @@ defmodule Zed.Converge.Diff do
       diff_datasets(ir),
       diff_apps(ir),
       diff_jails(ir),
-      diff_clusters(ir)
+      diff_clusters(ir),
+      diff_tarfs(ir),
+      diff_files(ir)
     ]
     |> List.flatten()
     |> Enum.reject(fn d -> d.action == :noop end)
+  end
+
+  # Tarfs + file diffs are unconditional :create — the executor steps
+  # are idempotent (mount checks for existing mount, file write is a
+  # content-comparing rewrite). Same shape as cluster diffs above.
+  defp diff_tarfs(%IR{tarfs_mounts: mounts}) do
+    Enum.map(mounts, fn node ->
+      %__MODULE__{
+        resource: node,
+        action: :create,
+        current: nil,
+        desired: node.config,
+        changes: [{:tarfs, nil, node.id}]
+      }
+    end)
+  end
+
+  defp diff_files(%IR{files: files}) do
+    Enum.map(files, fn node ->
+      %__MODULE__{
+        resource: node,
+        action: :create,
+        current: nil,
+        desired: node.config,
+        changes: [{:file, nil, node.id}]
+      }
+    end)
   end
 
   # Cluster diffs are unconditional :create entries — the artifact

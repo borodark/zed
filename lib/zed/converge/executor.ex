@@ -127,6 +127,60 @@ defmodule Zed.Converge.Executor do
     {:ok, {:jail_svc_pending, args.jail, args.service}}
   end
 
+  # Tarfs mount: idempotent.  If the requested mountpoint is already
+  # bound to the requested tar, no-op.  Otherwise call
+  # `doas mount -t tarfs <tar> <mount>`.  The kmod must be loaded
+  # (host setup; persist via tarfs_load=YES in /boot/loader.conf).
+  defp execute_step(%Step{type: :tarfs, action: :mount, args: args}, _platform) do
+    case tarfs_mount_status(args.mount) do
+      {:ok, src} when src == args.tar_path ->
+        {:ok, {:tarfs_already_mounted, args.mount}}
+
+      {:ok, other_src} ->
+        {:error, {:tarfs_mount_conflict, args.mount, other_src}}
+
+      :not_mounted ->
+        case System.cmd("doas", ["mount", "-t", "tarfs", args.tar_path, args.mount],
+               stderr_to_stdout: true
+             ) do
+          {_out, 0} -> {:ok, {:tarfs_mounted, args.mount}}
+          {out, code} -> {:error, {:tarfs_mount_failed, args.mount, String.trim(out), code}}
+        end
+    end
+  end
+
+  # File write: idempotent.  If on-disk content matches, no-op;
+  # otherwise rewrite and apply mode if specified.  Owner/group
+  # changes are out of scope for now — assume parent dataset is
+  # already chown'd to the right user.
+  defp execute_step(%Step{type: :file, action: :write, args: args}, _platform) do
+    desired = args.content
+
+    current =
+      case File.read(args.path) do
+        {:ok, c} -> c
+        _ -> nil
+      end
+
+    cond do
+      current == desired ->
+        {:ok, {:file_already_current, args.path}}
+
+      true ->
+        path = args.path
+        File.mkdir_p!(Path.dirname(path))
+
+        case File.write(path, desired) do
+          :ok ->
+            if args.mode, do: File.chmod!(path, args.mode)
+            {:ok, {:file_written, path}}
+
+          {:error, reason} ->
+            {:error, {:file_write_failed, path, reason}}
+        end
+    end
+  end
+
   # Cluster artifact write — touches the host filesystem under
   # <base>/zed/cluster/<id>.config. Synthesises a one-cluster IR
   # to feed the existing Cluster.Config.write!/3 helper instead of
@@ -194,6 +248,25 @@ defmodule Zed.Converge.Executor do
   end
 
   defp stamp_jail_properties(%{dataset: nil}), do: :ok
+
+  # Parse `mount` output to find the source for a given mountpoint.
+  # Returns `{:ok, source}` when mounted, `:not_mounted` otherwise.
+  defp tarfs_mount_status(mountpoint) do
+    case System.cmd("mount", [], stderr_to_stdout: true) do
+      {out, 0} ->
+        out
+        |> String.split("\n", trim: true)
+        |> Enum.find_value(:not_mounted, fn line ->
+          case Regex.run(~r/^(\S+) on (\S+) \(tarfs/, line) do
+            [_, src, ^mountpoint] -> {:ok, src}
+            _ -> nil
+          end
+        end)
+
+      _ ->
+        :not_mounted
+    end
+  end
 
   defp stamp_jail_properties(%{jail: jail_name, dataset: ds} = args) do
     # Dataset should already have pool prefix from plan
