@@ -297,12 +297,44 @@ Five idempotent steps + one Phase-2.5 probe.  ~931 ms wall (most of
 which is the prepare-snapshot pass and converge step.create on
 already-existing datasets).
 
-### M-I.4c — rollback drill (open)
-Replace the tar with a deliberately broken artifact (truncated,
-wrong release internal layout); converge fails Phase 2 or boot
-fails health; `zfs rollback` of the artifact dataset restores the
-prior tar; tarfs remount swaps in the prior release; Phase 2.5
-verifies the prior release is back up. Not yet exercised.
+### M-I.4c — rollback drill (verified)
+
+Driven from a one-off script that takes Mission.I's compiled IR and
+substitutes the health probe port (4000 → 1 closed). Phase 2 still
+succeeds (everything idempotent), Phase 2.5 probe fails, full
+rollback chain fires.
+
+```
+broken: probe @ port 1 (closed)
+  phase 1 (prepare): 4 snapshots taken (all :modify)
+  phase 2 (converge): all 1 hosts succeeded
+  phase 2.5 (health): health_failed
+  rollback mac_247: zfs rollback zroot/zed/exmc-trial/state@zed-…
+  rollback mac_247: zfs rollback zroot/zed/exmc-trial/artifacts@…
+  rollback mac_247: zfs rollback zroot/zed/exmc-trial@…
+  rollback mac_247: zfs rollback zroot/zed@…
+  result: {:error, :health_failed,
+           %{health_outcomes: %{mac_247: :failed},
+             rolled_back: %{mac_247: [ok: "", ok: "", ok: "", ok: ""]}}}
+
+recovery: probe @ port 4000 (good)
+  phase 2.5 (health): all hosts healthy
+  result: {:ok, …}
+```
+
+Visible state on disk is unchanged — Phase 1 snapshots matched
+pre-converge state, so rollback is a no-op in content terms. What's
+proven is the **chain**: prepare snapshots ⇒ Phase 2.5 trigger ⇒
+rollback executes against the snapshots ⇒ orchestrator returns
+`:health_failed` with rolled_back receipts. The trader's BEAM
+stayed up throughout (rollback is dataset-level; doesn't restart
+services).
+
+Latent bug fixed in passing: `app` DSL macro wasn't tagging
+config with `__host__` like the other verbs (dataset/tarfs/file/
+service_run). Mission.I.converge_coordinated/1 worked by accident
+because the per-host IR builder didn't override `apps`. The drill
+script that built host_irs by hand exposed the gap.
 
 ---
 
@@ -310,7 +342,6 @@ verifies the prior release is back up. Not yet exercised.
 
 | Phase | Scope |
 |---|---|
-| **M-I.4c** | Rollback drill — broken tar + zfs rollback + verify prior release recovers via Phase 2.5. |
 | **M-I.5** | Doc + commit + **β tag**. |
 
 ---
