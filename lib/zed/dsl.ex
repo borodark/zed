@@ -129,7 +129,15 @@ defmodule Zed.DSL do
     config = parse_app_block(block)
 
     quote do
-      @zed_apps {unquote(name), unquote(Macro.escape(config))}
+      config = unquote(Macro.escape(config))
+
+      config =
+        case @zed_current_host do
+          {host_name, _node, _pool} -> Map.put(config, :__host__, host_name)
+          nil -> config
+        end
+
+      @zed_apps {unquote(name), config}
     end
   end
 
