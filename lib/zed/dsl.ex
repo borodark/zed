@@ -71,6 +71,7 @@ defmodule Zed.DSL do
       Module.register_attribute(__MODULE__, :zed_clusters, accumulate: true)
       Module.register_attribute(__MODULE__, :zed_tarfs_mounts, accumulate: true)
       Module.register_attribute(__MODULE__, :zed_files, accumulate: true)
+      Module.register_attribute(__MODULE__, :zed_service_runs, accumulate: true)
       Module.put_attribute(__MODULE__, :zed_deploy_name, nil)
       Module.put_attribute(__MODULE__, :zed_pool, nil)
       Module.put_attribute(__MODULE__, :zed_snapshot_config, %{before_deploy: false, keep: 5})
@@ -98,7 +99,8 @@ defmodule Zed.DSL do
           cluster: 2,
           host: 3,
           tarfs: 2,
-          file: 2
+          file: 2,
+          service_run: 2
         ]
 
       unquote(block)
@@ -181,6 +183,33 @@ defmodule Zed.DSL do
   end
 
   @doc """
+  Declare a long-running service launched by a single command.
+
+      service_run :exmc_trial do
+        command "/opt/exmc/bin/exmc"
+        args ["daemon"]
+        cd "/var/db/exmc-trial"
+        env_file "/var/db/exmc-trial/env"
+        alive_check {:epmd, "trial"}
+      end
+  """
+  defmacro service_run(name, do: block) do
+    config = parse_kv_block(block)
+
+    quote do
+      config = unquote(Macro.escape(config))
+
+      config =
+        case @zed_current_host do
+          {host_name, _node, _pool} -> Map.put(config, :__host__, host_name)
+          nil -> config
+        end
+
+      @zed_service_runs {unquote(name), config}
+    end
+  end
+
+  @doc """
   Declare a managed file on the host. Used for env files,
   rc.d snippets, sysrc-only settings, etc.
 
@@ -242,6 +271,9 @@ defmodule Zed.DSL do
         end),
         files: Enum.filter(@zed_files || [], fn {_path, config} ->
           Map.get(config, :__host__) == unquote(name)
+        end),
+        service_runs: Enum.filter(@zed_service_runs || [], fn {_n, config} ->
+          Map.get(config, :__host__) == unquote(name)
         end)
       }}
       @zed_current_host nil
@@ -266,6 +298,7 @@ defmodule Zed.DSL do
     clusters = Module.get_attribute(env.module, :zed_clusters) |> Enum.reverse()
     tarfs_mounts = Module.get_attribute(env.module, :zed_tarfs_mounts) |> Enum.reverse()
     files = Module.get_attribute(env.module, :zed_files) |> Enum.reverse()
+    service_runs = Module.get_attribute(env.module, :zed_service_runs) |> Enum.reverse()
     hosts = Module.get_attribute(env.module, :zed_hosts) |> Enum.reverse()
     deploy_name = Module.get_attribute(env.module, :zed_deploy_name)
     pool = Module.get_attribute(env.module, :zed_pool)
@@ -276,7 +309,7 @@ defmodule Zed.DSL do
     {jails, inline_apps} = extract_inline_apps(jails)
     apps = apps ++ inline_apps
 
-    ir = build_ir(deploy_name, pool, datasets, apps, jails, zones, clusters, tarfs_mounts, files, snapshot_config)
+    ir = build_ir(deploy_name, pool, datasets, apps, jails, zones, clusters, tarfs_mounts, files, service_runs, snapshot_config)
 
     # Validate at compile time
     Zed.IR.Validate.run!(ir)
@@ -352,11 +385,19 @@ defmodule Zed.DSL do
                   %Zed.IR.Node{id: path, type: :file, config: config}
                 end)
 
+              host_service_runs =
+                (host_config[:service_runs] || [])
+                |> Enum.map(fn {nm, config} ->
+                  config = Map.delete(config, :__host__)
+                  %Zed.IR.Node{id: nm, type: :service_run, config: config}
+                end)
+
               host_ir = %{base_ir |
                 pool: pool,
                 datasets: host_datasets,
                 tarfs_mounts: host_tarfs,
-                files: host_files
+                files: host_files,
+                service_runs: host_service_runs
               }
 
               {host_name, host_config.node, host_ir}
@@ -494,7 +535,7 @@ defmodule Zed.DSL do
 
   # --- Private: IR Construction ---
 
-  defp build_ir(name, pool, datasets, apps, jails, zones, clusters, tarfs_mounts, files, snapshot_config) do
+  defp build_ir(name, pool, datasets, apps, jails, zones, clusters, tarfs_mounts, files, service_runs, snapshot_config) do
     %Zed.IR{
       name: name,
       pool: pool,
@@ -505,6 +546,7 @@ defmodule Zed.DSL do
       clusters: Enum.map(clusters, &build_cluster_node/1),
       tarfs_mounts: Enum.map(tarfs_mounts, &build_tarfs_node/1),
       files: Enum.map(files, &build_file_node/1),
+      service_runs: Enum.map(service_runs, &build_service_run_node/1),
       snapshot_config: snapshot_config
     }
   end
@@ -519,6 +561,10 @@ defmodule Zed.DSL do
 
   defp build_file_node({path, config}) do
     %Zed.IR.Node{id: path, type: :file, config: config}
+  end
+
+  defp build_service_run_node({name, config}) do
+    %Zed.IR.Node{id: name, type: :service_run, config: config}
   end
 
   defp build_app_node({name, config}) do

@@ -75,6 +75,16 @@ defmodule Zed.Examples.MissionI do
         # long names; EPMD doesn't bridge those.
         health :tcp, host: "192.168.0.247", port: 4000
       end
+
+      # M-I.4b: declarative service start.  Idempotent — alive_check
+      # short-circuits if the named node is already in epmd.
+      service_run :exmc_trial do
+        command "/opt/exmc/bin/exmc"
+        args ["daemon"]
+        cd "/var/db/exmc-trial"
+        env_file "/var/db/exmc-trial/env"
+        alive_check {:epmd, "trial"}
+      end
     end
 
     snapshots do

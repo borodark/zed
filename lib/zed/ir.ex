@@ -16,7 +16,8 @@ defmodule Zed.IR do
     snapshot_config: %{before_deploy: false, keep: 5},
     clusters: [],
     tarfs_mounts: [],
-    files: []
+    files: [],
+    service_runs: []
   ]
 
   @type t :: %__MODULE__{
@@ -29,7 +30,8 @@ defmodule Zed.IR do
           snapshot_config: map(),
           clusters: [Zed.IR.Node.t()],
           tarfs_mounts: [Zed.IR.Node.t()],
-          files: [Zed.IR.Node.t()]
+          files: [Zed.IR.Node.t()],
+          service_runs: [Zed.IR.Node.t()]
         }
 
   def dataset_ids(%__MODULE__{datasets: ds}), do: Enum.map(ds, & &1.id)

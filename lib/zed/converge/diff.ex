@@ -25,10 +25,23 @@ defmodule Zed.Converge.Diff do
       diff_jails(ir),
       diff_clusters(ir),
       diff_tarfs(ir),
-      diff_files(ir)
+      diff_files(ir),
+      diff_service_runs(ir)
     ]
     |> List.flatten()
     |> Enum.reject(fn d -> d.action == :noop end)
+  end
+
+  defp diff_service_runs(%IR{service_runs: runs}) do
+    Enum.map(runs, fn node ->
+      %__MODULE__{
+        resource: node,
+        action: :create,
+        current: nil,
+        desired: node.config,
+        changes: [{:service_run, nil, node.id}]
+      }
+    end)
   end
 
   # Tarfs + file diffs are unconditional :create — the executor steps

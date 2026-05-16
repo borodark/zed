@@ -160,6 +160,24 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
+  defp expand_to_steps(%Diff{resource: %{type: :service_run} = node, action: :create}, _pool) do
+    [
+      %Step{
+        id: "service_run:start:#{node.id}",
+        type: :service_run,
+        action: :start,
+        args: %{
+          name: node.id,
+          command: node.config[:command],
+          args: node.config[:args] || [],
+          cd: node.config[:cd],
+          env_file: node.config[:env_file],
+          alive_check: node.config[:alive_check]
+        }
+      }
+    ]
+  end
+
   defp expand_to_steps(_, _pool), do: []
 
   # The cluster artifact lives under <base>/zed/cluster/. Default
@@ -338,7 +356,8 @@ defmodule Zed.Converge.Plan do
         app: 6,
         file: 6,
         jail_svc: 7,
-        service: 8
+        service: 8,
+        service_run: 9
       }
 
       action_priority = %{install: 0, create: 1, start: 2, restart: 3, mount: 1, write: 1}

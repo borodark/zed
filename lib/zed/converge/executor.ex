@@ -181,6 +181,32 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  # Service run: idempotent.  alive_check (currently only :epmd) lets
+  # the executor short-circuit if the service is already up.  When
+  # spawning, the env file (sourced via `set -a`-style shell wrapping)
+  # provides RELEASE_COOKIE / RELEASE_NODE / app-specific env vars.
+  # The command itself is expected to background-fork (mix release's
+  # `daemon` mode does this); the executor doesn't tail it.
+  defp execute_step(%Step{type: :service_run, action: :start, args: args}, _platform) do
+    case service_run_alive?(args[:alive_check]) do
+      true ->
+        {:ok, {:service_already_running, args.name}}
+
+      false ->
+        cmd = args.command
+        cmd_args = args.args || []
+        cd = args[:cd] || "."
+        env_file = args[:env_file]
+
+        env = parse_env_file(env_file)
+
+        case System.cmd(cmd, cmd_args, cd: cd, env: env, stderr_to_stdout: true) do
+          {_out, 0} -> {:ok, {:service_started, args.name}}
+          {out, code} -> {:error, {:service_run_failed, args.name, String.trim(out), code}}
+        end
+    end
+  end
+
   # Cluster artifact write — touches the host filesystem under
   # <base>/zed/cluster/<id>.config. Synthesises a one-cluster IR
   # to feed the existing Cluster.Config.write!/3 helper instead of
@@ -248,6 +274,39 @@ defmodule Zed.Converge.Executor do
   end
 
   defp stamp_jail_properties(%{dataset: nil}), do: :ok
+
+  # alive_check helpers for :service_run.  Currently only :epmd
+  # (look up a registered short-name node).
+  defp service_run_alive?(nil), do: false
+
+  defp service_run_alive?({:epmd, sname}) do
+    case System.cmd("epmd", ["-names"], stderr_to_stdout: true) do
+      {out, 0} -> Regex.match?(~r/^name #{Regex.escape(sname)} /m, out)
+      _ -> false
+    end
+  end
+
+  # Parse a "VAR=value\n…" env file into the [{"VAR", "value"}, …]
+  # shape System.cmd/3 wants.  Skips blank lines and shell comments.
+  defp parse_env_file(nil), do: []
+
+  defp parse_env_file(path) do
+    case File.read(path) do
+      {:ok, contents} ->
+        contents
+        |> String.split("\n", trim: true)
+        |> Enum.reject(fn line ->
+          line == "" or String.starts_with?(String.trim(line), "#")
+        end)
+        |> Enum.map(fn line ->
+          [k, v] = String.split(line, "=", parts: 2)
+          {String.trim(k), v}
+        end)
+
+      _ ->
+        []
+    end
+  end
 
   # Parse `mount` output to find the source for a given mountpoint.
   # Returns `{:ok, source}` when mounted, `:not_mounted` otherwise.
