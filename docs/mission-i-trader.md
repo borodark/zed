@@ -238,11 +238,79 @@ but not blocking.
 
 ---
 
+## M-I.4 — Health + service start under one converge
+
+Sliced into three:
+
+### M-I.4a — `app` block + `:health` probes
+Mission.I gains an `app :exmc_trial do … end` carrying:
+```elixir
+node_name :"trial@mac"
+cookie {:env, "RELEASE_COOKIE"}
+env_file "/var/db/exmc-trial/env"
+health :tcp, host: "192.168.0.247", port: 4000
+```
+`:beam_ping` was considered and **omitted** — the trader uses
+sname (`trial@mac`) but the controller uses long names; EPMD
+doesn't bridge those, and the F3 finding from the health-check
+smoke (`docs/dual-mac-health-smoke.md`) means probes run on the
+controller, so the loopback target you'd otherwise type is
+meaningless. LAN-IP TCP probe is the right shape.
+
+Live result: trader manually started, converge fired Phase 2.5,
+`all hosts healthy` in 16 ms.
+
+### M-I.4b — `:service_run` verb (declarative service start)
+
+Sixth Mission-I verb. Declares a daemon command launched during
+converge with idempotency via `alive_check`:
+```elixir
+service_run :exmc_trial do
+  command "/opt/exmc/bin/exmc"
+  args ["daemon"]
+  cd "/var/db/exmc-trial"
+  env_file "/var/db/exmc-trial/env"
+  alive_check {:epmd, "trial"}
+end
+```
+The executor parses the env file at run-time and threads it through
+`System.cmd/3`'s `:env` keyword — no shell wrapping. `alive_check
+{:epmd, "trial"}` greps `epmd -names`; if the named node is
+registered, the start step short-circuits to
+`:service_already_running`.
+
+### Live result — single-call deploy
+```
+== run: converge_coordinated ==
+phase 1 (prepare): 1 hosts ready
+phase 2 (converge): all 1 hosts succeeded
+phase 2.5 (health): all hosts healthy
+result: {:ok, %{mac_247: {:ok, [
+  {"service_run:start:exmc_trial",       {:service_already_running, :exmc_trial}},
+  {"file:write:/var/db/exmc-trial/env",  {:file_already_current, "/var/db/exmc-trial/env"}},
+  {"tarfs:mount:exmc_release",           {:tarfs_already_mounted, "/opt/exmc"}},
+  {"dataset:set:zed:mountpoint",         :ok},
+  {"dataset:set:zed/exmc-trial:mountpoint", :ok}
+]}}}
+```
+Five idempotent steps + one Phase-2.5 probe.  ~931 ms wall (most of
+which is the prepare-snapshot pass and converge step.create on
+already-existing datasets).
+
+### M-I.4c — rollback drill (open)
+Replace the tar with a deliberately broken artifact (truncated,
+wrong release internal layout); converge fails Phase 2 or boot
+fails health; `zfs rollback` of the artifact dataset restores the
+prior tar; tarfs remount swaps in the prior release; Phase 2.5
+verifies the prior release is back up. Not yet exercised.
+
+---
+
 ## What's left for Mission I
 
 | Phase | Scope |
 |---|---|
-| **M-I.4** | Phase 2.5 health: `:beam_ping` against `trial@mac` + `:tcp` against Bandit at 4000. Service start (rc.d unit emit + `service exmc-trial start`) lands here. Rollback story: deploy a broken tar; `zfs rollback` restores prior artifact; Phase 2.5 verifies prior release came back up. |
+| **M-I.4c** | Rollback drill — broken tar + zfs rollback + verify prior release recovers via Phase 2.5. |
 | **M-I.5** | Doc + commit + **β tag**. |
 
 ---
