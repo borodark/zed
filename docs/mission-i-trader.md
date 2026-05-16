@@ -146,12 +146,21 @@ Nx.Vulkan.Native.device_name()  →  "NVIDIA GeForce GT 650M"
 
 ### Gaps surfaced (not Mission-I blockers, but worth filing)
 
-1. **`Nx.Vulkan.Node` not in `Exmc.Application` supervision tree.**
-   Trader boots fine but Vulkan compute would no-op until the node
-   is started. Workaround: started via RPC post-boot. **Real fix:**
-   add `Nx.Vulkan.Node` to `Exmc.Application`'s children when
-   `Exmc.JIT.detect_compiler() == Nx.Vulkan`. Small exmc change,
-   not a zed concern.
+1. ~~**`Nx.Vulkan.Node` not in `Exmc.Application` supervision tree.**~~
+   **CLOSED (2026-05-16, phd@a59def26c).** Live discovery during
+   Mission II investigation showed the trial had been running 9 h
+   in this broken state — `compiler=Nx.Vulkan` and
+   `default_backend=Nx.Vulkan.Backend` were both set, but
+   `Process.whereis(Nx.Vulkan.Node) == nil`, so every NUTS call
+   into the backend hung and the 300 s HealthCheck watchdog reset
+   stuck instruments. Patch adds a `gpu_children/0` function in
+   `Exmc.Application.start/2` that returns `[Nx.Vulkan.Node]` when
+   `Exmc.JIT.detect_compiler() == Nx.Vulkan`, else `[]`. ABI-safe
+   on EXLA/EMLX/BinaryBackend (no-op there). Verified on mac-247:
+   after rebuild + tar swap, `Process.whereis(Nx.Vulkan.Node)` is a
+   live pid; a manual round-trip
+   `Nx.Vulkan.Node.with_node(fn -> Nx.sum(Nx.add(Nx.iota({1024}),
+   1.0)) end)` returns 524_800.0 in ~1.1 ms.
 2. **Checkpoint path is CWD-relative** (`trial/checkpoints/<acct>`).
    Works because we start with `cd /var/db/exmc-trial`. A future
    pass should accept `EXMC_CHECKPOINT_ROOT` to drop the implicit
