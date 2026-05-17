@@ -15,6 +15,130 @@ this is a **subset migration**, not a 1:1 swap.
 
 ---
 
+## M-II.fix3 — Vulkan cold-path code-server deadlock *(open, found 2026-05-17)*
+
+Found while verifying M-II.fix2. Three NUTS workers spawned
+concurrently on the freshly-patched trader; **none completed in
+8 minutes**. Stack traces revealed three different stuck states:
+
+```
+SPY pid=#PID<0.4792.0> dev=vulkan status=:waiting
+  current_function: {:code_server, :call, 1}
+  stacktrace:
+    code_server.call/1 (line 159)
+    code_server.call/1 (line 159)          ← recursive code-server wait
+    Nx.Vulkan.shader_path/1 (line 174)
+    Nx.Vulkan.add/2         (line 166)
+    Nx.Vulkan.Backend.do_binary/4
+    Nx.Defn.Evaluator.eval_apply/4
+
+GLD pid=#PID<0.4791.0> dev=vulkan status=:running
+  current_function: {Enum, :drop_list, 2}
+
+XOM pid=#PID<0.4793.0> dev=vulkan status=:running
+  current_function: {Nx.Vulkan.Native, :upload_binary, 1}
+```
+
+Diagnosis: first-dispatch cold-path on the Vulkan shader triggers
+`Code.ensure_loaded/1` somewhere in `Nx.Vulkan.shader_path/1`
+(line 174) or its callee `Nx.Vulkan.Synthesis.compile/1` (which
+needs `:crypto.hash/2` for the content-addressed cache key). The
+`code_server` serialises module loads. If multiple workers race
+the cold path, the second and third deadlock behind the first.
+
+This is the M-I.0 finding (`:crypto` not auto-started under mix
+test) coming back in a different form — same root cause, different
+trigger.
+
+### Patch sketch
+
+After `Nx.Vulkan.Node` starts and BEFORE the trading children:
+
+```elixir
+defp gpu_children do
+  with Nx.Vulkan <- Exmc.JIT.detect_compiler(),
+       true <- Code.ensure_loaded?(Nx.Vulkan.Node) do
+    [Nx.Vulkan.Node, {Task, fn -> vulkan_warmup() end}]
+  else
+    _ -> []
+  end
+end
+
+defp vulkan_warmup do
+  # Resolve every module the cold-path uses, then one trivial
+  # dispatch.  After this returns, code_server lookups for the
+  # Vulkan path are warm and worker races can't deadlock.
+  for mod <- [Nx.Vulkan, Nx.Vulkan.Native, Nx.Vulkan.Synthesis,
+              Nx.Vulkan.ChainShaderSpecs, :crypto] do
+    Code.ensure_loaded!(mod)
+  end
+  Application.ensure_all_started(:crypto)
+  Nx.Vulkan.Node.with_node(fn ->
+    Nx.iota({16}, type: :f32) |> Nx.add(1.0) |> Nx.sum() |> Nx.to_number()
+  end)
+  Logger.info("[Application] Vulkan warmup complete")
+end
+```
+
+The Task is a transient child — it runs once, exits clean. The
+Supervisor restart strategy keeps the warmup from re-running on
+worker crashes.
+
+### Status
+
+- The 3 stuck workers from the fix2 verification will eventually
+  resolve (the first one's code_server lookup completes, then the
+  queue drains slowly).
+- Until M-II.fix3 lands, every trader restart will replay this
+  dance.
+- TLA+ angle: same shape as the rotation SOP's invariants —
+  "every active worker completes within max_runtime." A
+  ComputePool TLA+ spec would catch the no-warmup race as a
+  liveness violation. Worth doing alongside the rotation spec.
+
+## M-II.fix2 — backend-aware GPU tag *(done, 2026-05-17)*
+
+`Exmc.Trading.ComputePool` hard-coded `:cuda` as the GPU worker
+tag (line 246 of compute_pool.ex). On mac-247 (Vulkan-only),
+workers got `device: :cuda` passed into `sample_opts`; the
+compiler set `client: :cuda` on a host with no CUDA; the sampler
+hung forever. Live evidence at the swap point:
+**3 of 258 jobs completed, 141 went stale, 7 workers stuck for hours**
+(gens 1, 2, 3 still pending alongside gen 51).
+
+Patch shipped upstream at `phd@bb2249a1e`:
+
+```elixir
+defp gpu_tag do
+  case Exmc.JIT.detect_compiler() do
+    EXLA -> :cuda
+    EMLX -> :metal
+    Nx.Vulkan -> :vulkan
+    _ -> :host
+  end
+end
+
+defp sampler_device(:cuda), do: :cuda
+defp sampler_device(_),     do: :host
+```
+
+Two-stage translation: the **accounting tag** (`:cuda`/`:vulkan`/
+`:metal`/`:host`) is what `count_by_device` uses for slot
+budgeting; the **sampler device opt** is what the compiler/JIT
+actually understands. Vulkan and MLX dispatch through their own
+backends (`Nx.Vulkan.Node`, `EMLX.Backend`), so the JIT client
+must stay `:host` for them — anything else routes through a
+non-existent JIT client.
+
+`count_by_device` extended to match all GPU tags
+(`:cuda | :vulkan | :metal`) so Vulkan workers count toward the
+GPU concurrency budget (`Nx.Vulkan.Node` serialises through one
+GenServer; over-scheduling just queues at the mailbox).
+
+Verified live on mac-247: post-swap, `active=3 devs=%{vulkan: 3}`
+(no `:cuda` tags). The tag bug is fixed; the deeper M-II.fix3
+deadlock is now the bottleneck.
+
 ## M-II.fix — Vulkan.Node auto-start *(done, 2026-05-16)*
 
 The Mission II investigation immediately surfaced a latent
