@@ -259,10 +259,57 @@ Mission II and Mission III rather than postponing it indefinitely.
   the spike validated (current shim or vulkano), with the
   emitter + synthesise pipeline from R1 fully reused.
 
+## Resolved questions
+
+### Does vulkano build + run on FreeBSD? **YES.** *(verified 2026-05-18)*
+
+Empirical spike on mac-247:
+
+  Build:
+    $ tar -C ~/projects/learn_erl -cf - --exclude=vulkano/target \
+        --exclude=vulkano/.git vulkano | ssh mac-247 'tar -xf -'
+    $ ssh mac-247 'cd /home/io/vulkano && cargo build --release -p vulkano'
+    → Finished `release` profile [optimized] target(s)
+
+  All workspace crates compiled cleanly:
+    libvulkano.rlib              ✓
+    libvulkano_macros.so         ✓
+    libvulkano_shaders.so        ✓
+    libvulkano_taskgraph.rlib    ✓
+
+  (The basic-compute-shader EXAMPLE fails at `glslc not found` —
+  vulkano-shaders' `shader!` macro invokes glslc at build time to
+  compile inline GLSL.  This is a tooling issue for the example, not
+  a vulkano-on-FreeBSD issue.  Our usage path generates SPV
+  externally via glslangValidator (already on mac-247), so the
+  macro path is irrelevant.)
+
+  Runtime:
+    A minimal vulkano probe at /home/io/vulkano_probe/main.rs that
+    loads VulkanLibrary, creates an Instance, and enumerates
+    physical devices.  Output:
+
+      vulkan library loaded: api_version=1.4.336
+      physical devices: 2
+        [0] NVIDIA GeForce GT 650M — driver=1975517312, api=1.2.175
+        [1] llvmpipe (LLVM 19.1.7, 256 bits) — driver=1, api=1.3.278
+
+  vulkano sees the GT 650M via NVIDIA's ICD + llvmpipe software
+  fallback.  The Mission-II + III FreeBSD risk is closed.
+
+### Implication for the phased recommendation
+
+Phase 2 (vulkano spike) was budgeted as 1 week.  The build+enumeration
+part is now done in half an hour.  The remaining spike work is just
+porting one nx_vulkan entry point and benching — ~2 days, not a
+full week.
+
+Mission III can confidently plan on the vulkano-only Rust path
+without a "what if FreeBSD breaks" hedge.
+
 ## Open questions worth flagging
 
-1. **Does vulkano build on FreeBSD?** — settled by a half-day
-   spike on mac-247 (`cargo build` a hello-world).
+
 2. **Can the existing `nxv_leapfrog_chain_synth` accommodate obs
    as a repacked input slot, or do we need an 8th binding?** —
    answered by reading the shim's buffer-count handling +
