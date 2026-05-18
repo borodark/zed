@@ -136,6 +136,117 @@ EXLA reference to 2-σ.
 
 **Effort:** half day.
 
+### R2 — Plug into the leapfrog template *(refined 2026-05-18 after R1.5)*
+
+**Key finding from inspecting nx_vulkan's shim header:** the generic
+dispatch NIF that R2.1 was meant to build **already exists**.
+
+`nxv_leapfrog_chain_synth` (`nx_vulkan_shim.h:95`) was added during
+Phase 2 of nx_vulkan with this contract:
+
+```
+int nxv_leapfrog_chain_synth(
+    void* q_chain, void* p_chain, void* grad_chain, void* logp_chain,
+    void* q_init,  void* p_init,  void* inv_mass,
+    const void* push_data, unsigned int push_size,
+    const char* spv_path
+);
+```
+
+Opaque push-constants block up to 128 bytes; 3 read SSBOs + 4 write
+SSBOs at fixed bindings 0–6; spv_path is whatever shader the host
+hands it. Comments confirm: *"Generic K-step leapfrog chain dispatch
+for synthesized shaders. The push-constants block layout is OPAQUE
+to this shim — `push_data` is a raw `push_size`-byte blob assembled
+by the caller (Elixir-side codegen knows the per-shader layout)."*
+
+The Rust binding and Elixir stub
+(`Nx.Vulkan.Native.leapfrog_chain_synth/6`) are also already in
+place. So R2.1's "build Rust NIF for generic dispatch" task is
+**done before we started**.
+
+This collapses R2 to four Elixir-side pieces:
+
+#### R2.1 *(done — pre-existing infrastructure)*
+
+#### R2.2 — Render leapfrog template with R1 emitter bodies
+
+The existing `Nx.Vulkan.ShaderTemplate.FamilySpec` has the K-step
+leapfrog skeleton with placeholders for the per-family bodies
+(`{{LOG_PROB_BODY}}`, `{{GRAD_BODY}}`, etc.). For synthesised
+shaders, the placeholders fill from:
+
+- `CustomSynth.Glsl.emit/2` on the value Defn graph → log_p body
+- `CustomSynth.Glsl.emit_vector/2` on the gradient Defn graph →
+  per-position grad bodies
+
+The template renderer then emits one GLSL `void main()` that:
+- Reads `q[i]` from the q_init SSBO at thread index i
+- Computes log_p using the emitted value expression
+- Computes the per-position gradient using emit_vector's
+  `[{idx, glsl}, ...]` entries — written to `grad_chain[k * n + idx]`
+- Reduces log_p across threads (shared memory pattern already in
+  the template)
+- Writes K-step trajectory into q_chain / p_chain / grad_chain /
+  logp_chain
+
+#### R2.3 — Push-constants layout for synthesised shaders
+
+The push block needs:
+- `uint n` — dimension (8 for the regime model)
+- `uint K` — leapfrog steps per dispatch (typically 32)
+- `float eps` — step size
+- per-RV constant parameters (the regime model's standard-family
+  priors: mu/sigma for each Normal, scale for each HalfCauchy)
+- observation data... no — obs is too large for push constants
+  (128 byte limit); obs goes in an additional SSBO. **R2.3 must
+  extend the chain_synth shim signature to accept >3 input
+  buffers**, OR keep obs in a thread-local global the shader reads
+  by binding 7. Worth checking the existing shim limits.
+
+#### R2.4 — Wire CustomSynth.synthesise/1
+
+Replace the `:unsupported` stub in `Exmc.NUTS.CustomSynth` with:
+
+```elixir
+def synthesise(%IR{} = ir) do
+  with {:ok, components} <- extract_components(ir),
+       {:ok, glsl} <- render_template(components),
+       {:ok, spv_path} <- Nx.Vulkan.Synthesis.compile_glsl(glsl),
+       push_spec <- build_push_spec(components) do
+    sha = :crypto.hash(:sha256, glsl) |> Base.encode16(case: :lower)
+    {:ok, {:synthesised, sha, components.layout, push_spec, spv_path}}
+  else
+    err -> err
+  end
+end
+```
+
+`Nx.Vulkan.Synthesis.compile_glsl/1` doesn't exist today (only
+`Synthesis.compile/1` taking a FamilySpec) — needs a sibling
+function that accepts arbitrary GLSL strings. This is the
+narrowest piece of nx_vulkan work R2 needs.
+
+#### R2.5 — Tree.do_dispatch routing
+
+`Exmc.NUTS.Tree.do_dispatch/10` already pattern-matches on the
+meta tuple's family tag. Add a clause for `{:synthesised, sha,
+layout, push_spec, spv_path}` that:
+- Builds the push-constants binary using `push_spec`
+- Calls `Nx.Vulkan.Native.leapfrog_chain_synth/6` with q/p/inv_mass
+  + push_data + spv_path
+- Returns the 4 output tensors in the same shape as
+  `Exmc.NUTS.Vulkan.Dispatch.chain/8` produces
+
+**Effort revised:** R2 total ~3–5 days instead of "1–2 weeks." The
+generic dispatch infrastructure being pre-built is the largest
+cost the original plan didn't anticipate.
+
+### R3 — Bench
+
+(unchanged from the original plan: target ≤ 500 ms/sample on GT
+650M)
+
 ### R4 — Cutover
 **Goal:** migrate the live trial.
 
