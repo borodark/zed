@@ -1,0 +1,348 @@
+# Vulkan Custom-Distribution Chain Shader Synthesis — Spec
+
+**Status:** draft, 2026-05-18. Triggered by Mission II E2: the
+regime trial on mac-247 hits the **per-op Vulkan dispatch path**
+because `ChainShaderCodegen.detect_meta/1` only matches 5 standard
+families (Normal, Exponential, Student-t, Cauchy, Half-Normal).
+The regime model uses `Exmc.Dist.Custom` — falls through to the
+JIT'd `multi_step_fn` → ~150,000× slower than the fused-shader
+path benchmarked at 162 ms/sample on the same hardware.
+
+**Two horizons, one architecture:**
+
+- **Near (Mission II finish-line):** synthesise a fused chain
+  shader for the regime model so the live trial moves to mac-247.
+  Scope = log-prob expressions. ~1–2 weeks.
+- **Far (Mission III and beyond):** generalise the synthesis
+  machinery to ANY Nx.Defn function — making `nx_vulkan` a real
+  Nx backend on FreeBSD + Linux non-CUDA + macOS via MoltenVK,
+  parity-aspirant with EXLA on the subsets that matter (Axon
+  forward+backward, Scholar's compute-bound algorithms).
+
+The two horizons share infrastructure: Nx.Defn → GLSL emitter +
+glslangValidator + content-addressed pipeline cache. Near work
+delivers value alone; far work compounds.
+
+---
+
+## Part A — Mission II reframed: live regime trial → mac-247
+
+Five phases. Phase R0 is the dispatch hookup, R1–R3 is the
+synthesis machinery, R4 is the cutover.
+
+### R0 — Hookup point (no-op infrastructure)
+**Goal:** wire `ChainShaderCodegen.detect_meta/1` to a new
+`synthesise_meta/1` branch when the model contains a Custom
+distribution. The branch initially returns `:unsupported`; this
+phase just locates the entry point.
+
+Files:
+- `exmc/lib/exmc/nuts/chain_shader_codegen.ex` — add
+  `def detect_meta(%IR{...} = ir)` clause matching the regime
+  shape (single Normal+HalfCauchy+Custom hierarchy), routes to
+  `Exmc.NUTS.CustomSynth.synthesise(ir)`.
+- `exmc/lib/exmc/nuts/custom_synth.ex` — new module, returns
+  `:unsupported` initially.
+
+**Acceptance:** existing tests still pass; regime IR routes
+through the new branch (verified by tracing).
+
+**Effort:** half day.
+
+### R1 — Distribution log-prob emitter
+**Goal:** given an `Exmc.Dist.Custom` with a `defn log_prob/2`,
+emit a GLSL expression for the log-prob value AND its gradient
+w.r.t. the position.
+
+The trick: `Exmc.Dist.Custom` already declares `log_prob` as a
+Defn (the regime model uses Builder + Custom + Defn). Defn is
+a typed graph IR. We can walk it.
+
+The set of ops we have to handle for log-prob is small:
+```
++, -, *, /, **, neg, abs,
+log, exp, log1p, expm1, sigmoid, tanh, softplus,
+max, min, where, select,
+reduce_sum, reduce_mean (over a known small axis),
+constants, parameter refs.
+```
+
+That's ~25 ops. Each maps to a GLSL fragment.
+
+**Gradient generation:** two options:
+1. **Use Nx.Defn.Grad** to produce a Defn graph for
+   `dlogp/dq`, then emit GLSL for that graph too. Reuses Nx's
+   autodiff. Recommended.
+2. **Manually emit GLSL for the gradient** (tedious, error-prone).
+
+Stick with (1). It composes with the existing `Nx.Defn.value_and_grad`.
+
+The emitter:
+
+```elixir
+defmodule Exmc.NUTS.CustomSynth.GLSL do
+  @doc """
+  Compile an Nx.Defn graph to a GLSL expression body.  Returns
+  `{:ok, glsl_body, n_buffer_inputs, n_buffer_outputs}`.
+
+  The body assumes:
+    * input buffers q_init[], inv_mass[], obs[] in scope
+    * output buffers q_chain[], p_chain[], logp_chain[], grad_chain[]
+    * push-constant struct with eps, K, n, plus any custom-dist
+      parameters
+  """
+  def emit(defn_graph, opts), do: ...
+end
+```
+
+**Acceptance:** for the regime model's `log_prob` Defn, the
+emitter produces compilable GLSL whose output matches
+`Exmc.Dist.Custom.log_prob/2` on the BinaryBackend within
+1e-6 absolute tolerance over a fuzz suite of 100 random inputs.
+
+**Effort:** 3–5 days. The autodiff hookup is the load-bearing
+piece; once it works, GLSL emission is mechanical.
+
+### R2 — Plug into the leapfrog template
+**Goal:** take the existing `Nx.Vulkan.ShaderTemplate.FamilySpec`
++ the regime model's log-prob/grad GLSL, render a complete
+chain shader, run through `Synthesis.compile/1` (already
+content-addresses + caches).
+
+The existing template (`nx_vulkan/lib/nx_vulkan/shader_template.ex`)
+parameterises the leapfrog body on placeholders like
+`{{LOG_PROB_BODY}}` and `{{GRAD_BODY}}`. R2 fills those in from
+the R1 emitter rather than hand-written family-specific bodies.
+
+**Acceptance:** regime model goes through synthesis end-to-end,
+producing a cached SPIR-V file. First `compile/1` cold ≤ 1 s;
+second is cache-hit (≤ 1 ms).
+
+**Effort:** 2–3 days.
+
+### R3 — Bench
+**Goal:** measure regime-model sample wall time on GT 650M.
+
+Target: ≤ 500 ms/sample (3× the trivial-Normal 162 ms baseline
+seems generous). If we hit it, mac-247 is throughput-viable.
+If we miss by 10× (worst plausible case from inefficient
+GLSL emission), still acceptable — the live trial's
+`update_every: 20 s` means we can keep up with ~40 instruments at
+500 ms each, or ~10 instruments at 2 s each.
+
+**Acceptance:** 5 timed samples on regime IR, mean ≤ 500 ms,
+zero divergences after 200-step warmup, posterior agrees with
+EXLA reference to 2-σ.
+
+**Effort:** half day.
+
+### R4 — Cutover
+**Goal:** migrate the live trial.
+
+Sequence:
+1. Snapshot dev-host checkpoints + instruments file.
+2. `zfs send | ssh mac-247 zfs recv` the alpaca_6k subtree.
+3. Copy accounts.config (or a subset of the 4 paper accounts
+   we choose for mac-247).
+4. Restart mac-247 trader (already has the fixed Application +
+   ComputePool patches from M-II.fix and M-II.fix2).
+5. Stop the corresponding instruments on the dev-host trial via
+   HotReloadWorker (modify `instruments.txt`).
+6. Watch 1 h for divergence between the two trials.
+
+**Effort:** half day, modulo any operational surprises.
+
+### R5 — Tag γ
+Document + commit the synthesis machinery on `borodark/exmc` +
+`borodark/nx_vulkan`. The "Custom-distribution synthesis on
+Vulkan" angle is a publishable result.
+
+**Effort:** half day.
+
+**Total for Part A:** 7–10 days focused work.
+
+---
+
+## Part B — General Custom Compute Synthesis (Mission III)
+
+The R1 emitter is, at heart, **"Nx.Defn → GLSL for a small op set
+on small tensors."** Mission III generalises that into a
+multi-layer architecture.
+
+### Layer 1 — Distribution log_prob synthesis
+**Scope:** function `(params, x) -> scalar` where `x` and
+`params` are scalars or small tensors (typically dim ≤ 256 to
+fit a single workgroup).
+
+This is what R1 ships. Covers:
+- All MCMC log_prob expressions, including hierarchical models
+  with one custom likelihood and standard priors.
+- Variational ELBO computations (ADVI).
+- Loss functions for small models.
+
+### Layer 2 — General Nx.Defn → SPIR-V
+**Scope:** any `defn` function consuming and producing tensors
+of bounded size (≤ ~1 GB on Kepler, less on integrated GPUs).
+
+This is the "small XLA" — a real Nx backend competing with
+`Nx.BinaryBackend` and `Nx.Defn.Evaluator` on correctness, with
+Vulkan acceleration on top.
+
+**Required ops (in dependency order):**
+
+| Tier | Ops | Scope |
+|---|---|---|
+| **T1** | element-wise (+, -, *, /, **, neg, abs, log, exp, etc.) | 50 ops; one GLSL fragment each |
+| **T2** | reductions (sum, mean, max, argmax along axes) | shared-memory + barrier patterns; the existing leapfrog template already does this for log_p |
+| **T3** | broadcasts, slices, gathers | index-arithmetic templates; gather is the load-bearing primitive for embeddings + indexing |
+| **T4** | matmul, transpose, conv | tiled compute shaders; cooperative-matrix on newer GPUs, fall back to plain MAD loops on Kepler |
+| **T5** | control flow (while, cond) | bounded; Vulkan compute shaders don't have unbounded dynamic dispatch — use a host-side loop with multiple kernel calls |
+| **T6** | scatter, custom kernels | scatter is hard on GPU (needs atomics); custom kernels are an escape hatch for users who want to hand-roll |
+
+T1 + T2 + T3 covers ~80 % of typical Nx.Defn workloads. T4
+unlocks Axon and Scholar. T5–T6 are the long tail.
+
+**Backend protocol:** implement `Nx.Defn.Compiler` (the protocol
+EXLA + Defn evaluator both implement). Hook is `__compile__/4` —
+given a Defn graph, return a function that takes args and
+returns results. Inside, walk the graph and emit GLSL.
+
+Pipeline:
+```
+Nx.Defn graph
+   → Vulkan compiler walks the graph
+   → emits GLSL kernels (one per "fused block")
+   → glslangValidator → SPIR-V
+   → cache by graph-hash (already supported)
+   → at call time: bind buffers, dispatch, read back
+```
+
+**Effort:** 4–8 weeks. The T1–T3 work compounds; T4 is a real
+project on its own.
+
+### Layer 3 — Axon-shaped synthesis
+**Scope:** Axon models (Dense, Conv2D, BatchNorm, ReLU,
+attention, dropout, …) — both forward and backward pass.
+
+If Layer 2 covers the underlying Nx.Defn ops, **Axon
+"compiles for free"** — Axon's `Axon.compile/3` already
+produces a Defn function. The catch: real performance needs
+specialised shaders for the bottleneck layers:
+
+| Layer | Specialised shader | Hardness |
+|---|---|---|
+| Dense (matmul + bias) | Tiled matmul, bias broadcast in same dispatch | medium — well-trodden |
+| Conv2D | Im2col + matmul, or direct conv | medium — same as Dense but with index math |
+| BatchNorm | Fused with the preceding op | easy if Layer 2 has reductions |
+| Activation (ReLU, GELU, etc.) | Element-wise, fused into the prior op's dispatch | easy |
+| Attention | Flash-attention-style fused kernel | hard — large memory bandwidth opportunity |
+| Embedding | Gather over a table | T3 gather primitive |
+
+Without specialised shaders, Axon-on-Vulkan would still WORK at
+Layer 2 performance — useful, not great. With them, transformer
+inference becomes feasible on the FreeBSD path.
+
+### Layer 4 — Scholar-shaped synthesis
+**Scope:** Scholar's classical-ML algorithms (KMeans, kNN,
+PCA, SVM, linear regression).
+
+Most are pure Nx.Defn already — Layer 2 covers them.
+Specialised shaders matter for two: KMeans (centroid update is a
+scatter + reduce) and large-scale kNN (top-k over distances is a
+parallel reduction).
+
+### Layer 5 — Escape hatch
+**Scope:** users who want to write hand-rolled GLSL for a
+specific kernel.
+
+API sketch:
+```elixir
+defmodule MyKernel do
+  use Nx.Vulkan.Kernel
+
+  shader """
+  #version 450
+  layout (local_size_x = 256) in;
+  layout (std430, binding = 0) buffer In  { float a[]; };
+  layout (std430, binding = 1) buffer Out { float b[]; };
+  void main() {
+    uint i = gl_GlobalInvocationID.x;
+    b[i] = sin(a[i]) + cos(a[i]);
+  }
+  """
+
+  def run(a), do: Nx.Vulkan.Kernel.dispatch(__MODULE__, [a], output_shape: Nx.shape(a))
+end
+```
+
+For users who need ops that the synthesis layer hasn't grown to
+yet — they bypass the synthesiser and ship their own GLSL. The
+content-addressed cache + Vulkan.Node lifecycle still apply.
+
+---
+
+## What this unlocks, ranked
+
+1. **mac-247 hosts the live regime trial** at ~hundreds of ms per
+   sample (Part A).
+2. **`nx_vulkan` becomes a first-class Nx backend** for FreeBSD +
+   non-CUDA Linux (Part B Layer 2).
+3. **Axon on FreeBSD becomes real** (Part B Layer 3) — gateway
+   to ML-on-BEAM on hardware EXLA-CUDA can't touch.
+4. **The FreeBSD Foundation pitch** (per
+   `bsd-confs.md`) gets a concrete deliverable: a Vulkan-backed
+   ML stack with reproducible posteriors on Kepler-era GPUs.
+
+---
+
+## Risks
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Autodiff for Custom dist's Defn breaks on non-trivial graphs | medium | Test against the regime model + 3 other published hierarchical models before claiming generality |
+| Synthesis output is correct but slow (un-optimised GLSL) | high | Layer 2 ships with a "Q-grade" target; Layer 3 specialised shaders close the perf gap as needed |
+| Cooperative matrix unavailable on Kepler → matmul slow | high | Plain MAD-loop fallback; documented perf cliff vs Ampere+ |
+| Reductions across large tensors (> single workgroup) need multi-dispatch | known | Existing leapfrog template already does single-workgroup reductions; multi-pass reduction is a standard pattern |
+| OSS adoption requires Hex publish + docs + CI | known | Already in the OSS-split work; pre-condition for Mission III |
+
+---
+
+## Phasing for the full thing
+
+| Mission | Scope | Duration |
+|---|---|---|
+| **M-II (in flight)** | Part A R0–R5 — regime trial on mac-247 | 1–2 weeks |
+| **M-III.1** | Part B Layer 1 generalisation (post-R1 cleanup, more dist families, more autodiff coverage) | 2 weeks |
+| **M-III.2** | Part B Layer 2 T1–T3 (element-wise + reductions + gather/scatter) | 4 weeks |
+| **M-III.3** | Part B Layer 2 T4 (matmul + conv) | 4 weeks |
+| **M-III.4** | Part B Layer 3 (Axon specialised shaders + benchmarks) | 3 weeks |
+| **M-III.5** | Part B Layer 4 (Scholar) + Layer 5 (escape hatch + docs) | 2 weeks |
+| **M-III.6** | Hex publish nx_vulkan @ 0.2, benchmarks blog | 1 week |
+
+**Total Mission III:** ~16 weeks of focused effort. Could be
+shorter with parallelisation across multiple R&D streams.
+
+---
+
+## Where this lives
+
+- **Mission II Part A** lands in `borodark/exmc` and
+  `borodark/nx_vulkan` — the synthesis machinery is in
+  `nx_vulkan/lib/nx_vulkan/synthesis.ex` + a new
+  `exmc/lib/exmc/nuts/custom_synth.ex` for the NUTS-specific
+  bridge.
+- **Mission III** is mostly `nx_vulkan` — the Nx backend +
+  shader emitter live there. Axon / Scholar specialisations
+  could be in their own packages (`axon_vulkan`, `scholar_vulkan`)
+  or vendored into the respective upstream projects via PRs.
+
+---
+
+## Note on scope decisions
+
+The user's framing was "custom compute synthesis for Axon/Scholar
+is in the scope." This spec interprets that as **Mission III's
+ambition**, with **Mission II Part A** as the immediate, concrete
+delivery. The full Mission III is a half-year of work; Mission II
+Part A is two weeks. Both compose into a coherent FreeBSD-GPU
+story for BEAM ML.
