@@ -171,24 +171,109 @@ This collapses R2 to four Elixir-side pieces:
 
 #### R2.2 — Render leapfrog template with R1 emitter bodies
 
-The existing `Nx.Vulkan.ShaderTemplate.FamilySpec` has the K-step
-leapfrog skeleton with placeholders for the per-family bodies
-(`{{LOG_PROB_BODY}}`, `{{GRAD_BODY}}`, etc.). For synthesised
-shaders, the placeholders fill from:
+**Investigation finding (2026-05-18): the existing template is the
+wrong shape for custom multi-RV models.** Real architectural
+work, not just text substitution.
 
-- `CustomSynth.Glsl.emit/2` on the value Defn graph → log_p body
-- `CustomSynth.Glsl.emit_vector/2` on the gradient Defn graph →
-  per-position grad bodies
+The existing `Nx.Vulkan.ShaderTemplate.FamilySpec` template
+(`nx_vulkan/lib/nx_vulkan/shader_template.ex:51`) is
+**single-RV-per-thread**:
 
-The template renderer then emits one GLSL `void main()` that:
-- Reads `q[i]` from the q_init SSBO at thread index i
-- Computes log_p using the emitted value expression
-- Computes the per-position gradient using emit_vector's
-  `[{idx, glsl}, ...]` entries — written to `grad_chain[k * n + idx]`
-- Reduces log_p across threads (shared memory pattern already in
-  the template)
-- Writes K-step trajectory into q_chain / p_chain / grad_chain /
-  logp_chain
+- `local_size_x = 256` workgroup
+- Each thread reads its own `qi = q_init[i]` at thread index i
+- Each thread updates its `qi` + `pi` independently
+- Each thread writes `q_chain[k * n + i]`
+- The K-step leapfrog body assumes `grad_q` and `lp_i` are
+  **functions of qi alone** (and the push constants)
+
+That is correct for Normal/Exponential/StudentT/Cauchy/HalfNormal —
+each q[i] is iid with the same scalar distribution, so the joint
+log_p is a sum of per-component scalars and the gradient is a
+per-component scalar derivative.
+
+The **regime model breaks both assumptions**:
+
+| | Single-RV family (existing) | Regime model (R2.2 target) |
+|---|---|---|
+| RVs | independent over q[i] | hierarchical, 8 distinct named RVs |
+| log_p | sum over q[i] of scalar log_pdf(q[i]) | sum over **obs[j]** of log of softmax-mixture using ALL q[i] |
+| grad q[i] | f(q[i]) only | f(q[0..7], obs[0..199]) — depends on whole q AND the obs vector |
+| Obs data | none | obs[200] — too large for push constants (1600 B vs 128 B limit) |
+| Parallelism axis | q dimension i (d-way) | obs dimension j (n-way) |
+
+The right template shape for multi-RV custom models:
+
+**Design A — Multi-RV with obs-axis parallelism.**
+```
+local_size_x = 256  // threads = obs-axis parallelism
+shared float q_shared[d_max];  // broadcast q to all threads
+shared float partial_logp[256];
+shared float partial_grad[d_max][256];
+
+void main() {
+    uint j = gl_GlobalInvocationID.x;            // obs index
+    uint tid = gl_LocalInvocationIndex;
+    bool in_obs = (j < pc.n_obs);
+
+    // Thread 0..d-1 load q_shared
+    if (tid < pc.d) q_shared[tid] = q_init[tid];
+    barrier();
+
+    for (uint k = 0; k < pc.K; k++) {
+        // -- Half-step momentum at q --
+        // Each thread computes its contribution to log_p AND to
+        // each ∂logp/∂q[i] for i in 0..d-1.
+        float my_logp = in_obs ? <emitted log_p contribution at obs[j]> : 0.0;
+        partial_logp[tid] = my_logp;
+        for (uint i = 0; i < pc.d; i++) {
+            float my_grad_i = in_obs ? <emitted ∂logp/∂q[i] contribution at obs[j]> : 0.0;
+            partial_grad[i][tid] = my_grad_i;
+        }
+        barrier();
+
+        // Standard 256-way reduction across threads ...
+        // grad_shared[i] = sum of partial_grad[i][:]
+        // logp_shared    = sum of partial_logp[:]
+        barrier();
+
+        // Thread 0..d-1 do their own leapfrog update using grad_shared[i]
+        if (tid < pc.d) {
+            float grad_q = grad_shared[tid];
+            // p_half, qi, then half-step momentum at qn ...
+        }
+        barrier();
+    }
+}
+```
+
+This is a different shader, sharing only the K-loop structure and
+the push-constants header with the existing FamilySpec template.
+Worth a new `Nx.Vulkan.ShaderTemplate.MultiRvCustomSpec` module
+rather than overloading `FamilySpec`.
+
+**Open issue: obs SSBO.** The existing `nxv_leapfrog_chain_synth`
+binds exactly 7 buffers (3 read + 4 write). For multi-RV custom
+models, we need an 8th: `obs[]` at binding 7. Two options:
+
+1. **Extend the shim** to accept a variable number of input
+   buffers (real C++ work, ~50 lines).
+2. **Repack obs into one of the existing input buffers.** E.g.,
+   inv_mass is d-sized; obs is much larger. Could allocate one
+   "input_extras" buffer carrying obs[0..n-1] followed by
+   inv_mass[0..d-1]. Caller-side packing only; shim unchanged.
+
+Option 2 is the smaller bite. Probably the right R2.2 choice
+unless extending the shim is cheap.
+
+**R2.2's actual deliverable:**
+
+- `Nx.Vulkan.ShaderTemplate.MultiRvCustomSpec` with the
+  Design-A skeleton above
+- `MultiRvCustomSpec.render/1` filling `{log_p_body}` +
+  `{grad_body_for_q_i}` placeholders from the R1 emitter
+- Tests: rendered GLSL passes glslangValidator
+- Defer: actual numerical correctness vs Defn — that lands when
+  R2.4 + R2.5 wire dispatch end-to-end
 
 #### R2.3 — Push-constants layout for synthesised shaders
 
