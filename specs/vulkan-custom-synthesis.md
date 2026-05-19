@@ -1,12 +1,24 @@
 # Vulkan Custom-Distribution Chain Shader Synthesis — Spec
 
-**Status:** draft, 2026-05-18. Triggered by Mission II E2: the
-regime trial on mac-247 hits the **per-op Vulkan dispatch path**
-because `ChainShaderCodegen.detect_meta/1` only matches 5 standard
+**Status:** R0–R3 complete, validated on mac-247 (GT 650M
+Mac Edition, FreeBSD 15.0), 2026-05-19. R4 cutover + R5 tag γ
+pending; obs-axis-parallel (Design A) is an open optimisation.
+See `exmc/docs/MISSION_II_SYNTHESIS.md` for the as-shipped
+pipeline + perf numbers.
+
+**Original problem (2026-05-18):** the regime trial on mac-247
+hits the **per-op Vulkan dispatch path** because
+`ChainShaderCodegen.detect_meta/1` only matches 5 standard
 families (Normal, Exponential, Student-t, Cauchy, Half-Normal).
 The regime model uses `Exmc.Dist.Custom` — falls through to the
 JIT'd `multi_step_fn` → ~150,000× slower than the fused-shader
 path benchmarked at 162 ms/sample on the same hardware.
+
+**Outcome (2026-05-19):** synthesised regime chain shader on GT
+650M runs at 60 ms / K=32-dispatch (1.87 ms / leapfrog step,
+projected ~60 ms / NUTS sample at tree depth 5 — **8.3× under
+the 500 ms budget**), numerically equivalent to a Defn reference
+to f32 precision across all 8 RVs.
 
 **Two horizons, one architecture:**
 
