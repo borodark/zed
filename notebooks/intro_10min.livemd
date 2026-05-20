@@ -1,0 +1,235 @@
+# Zed in 10 Minutes
+
+An onramp for Elixir developers who haven't done much ops. By the end of
+this guide you'll have written a deployment spec, applied it, shipped a
+version bump, and rolled back to the previous version — all using the
+same `mix`-style ergonomics you already know, and a filesystem you may
+not.
+
+## What Zed Is
+
+Zed is a deployment tool for Elixir/BEAM applications. It lets you
+describe what should be running on a FreeBSD host — datasets, apps,
+jails, snapshots — and reconciles the host to match.
+
+The interesting bit is *where the state lives*. Most deployment tools
+keep their own database of "what's deployed" — etcd, an S3 bucket of
+Terraform state, a Chef server. Zed keeps it in **ZFS user properties**
+on the filesystem itself.
+
+```text
+$ zfs get com.zed:version tank/apps/hello
+NAME             PROPERTY          VALUE   SOURCE
+tank/apps/hello  com.zed:version   1.0.1   local
+```
+
+That property travels with the dataset. `zfs send | zfs receive`
+replicates it. `zfs rollback` reverts it together with the data, in O(1).
+No separate state store can drift from reality, because reality *is*
+the state store.
+
+## The Three Nouns
+
+To deploy something with Zed you write a module that uses `Zed.DSL`.
+Inside a `deploy` block you declare three kinds of things:
+
+- **`dataset`** — a ZFS dataset. Zed creates it with the properties
+  you specify (compression, mountpoint, etc.) and stamps the metadata
+  it needs onto it (`com.zed:role`, version, fingerprint).
+- **`app`** — a BEAM release. Zed knows how to install a release into
+  a dataset, start it under a release script, and tear it down on
+  rollback. Each app has a `version`, a `dataset` it lives in, and
+  optionally a `cookie` and `node_name` for clustering.
+- **`snapshots`** — the retention policy. `before_deploy true` means
+  Zed snapshots the app's dataset before every converge. `keep 5`
+  means it prunes anything older than the last five.
+
+Convergence is the loop that turns a spec into reality:
+
+```text
+diff   →   plan   →   apply   →   verify
+  ↑                                 ↓
+  └──────  if verify fails  ───────┘
+                rollback
+```
+
+Each phase is pure data until apply. You can call `diff/0` all day
+without touching the filesystem.
+
+## Prereqs
+
+Zed runs on **FreeBSD** with a **ZFS pool**. The smallest setup is a
+FreeBSD 14 or 15 VM with a single pool — `zpool create tank /dev/da1`
+on a spare disk gets you there. If you're trying this from a Mac or
+Linux box, a bhyve VM, an iohyve guest, or `vmrun` running FreeBSD all
+work.
+
+Inside that VM:
+
+```bash
+pkg install elixir erlang-runtime27 bastille
+# Clone zed somewhere
+git clone https://github.com/borodark/zed
+cd zed && mix deps.get && mix compile
+```
+
+You won't need to be a ZFS expert. The only command you'll type by hand
+is `zpool status` to confirm the pool exists, and (later) `zfs list`
+to confirm Zed put the datasets where it said it would.
+
+## Your First Deploy
+
+Create a file `lib/hello_infra.ex` in your own project, or anywhere
+Zed can compile it:
+
+```elixir
+defmodule HelloInfra do
+  use Zed.DSL
+
+  deploy :hello, pool: "tank" do
+    dataset "apps/hello" do
+      compression :lz4
+    end
+
+    app :hello do
+      dataset "apps/hello"
+      version "1.0.0"
+      node_name :"hello@localhost"
+      cookie {:env, "RELEASE_COOKIE"}
+    end
+
+    snapshots do
+      before_deploy true
+      keep 5
+    end
+  end
+end
+```
+
+That's about it. Twenty lines. The `use Zed.DSL` macro adds four
+functions to `HelloInfra`: `diff/0`, `converge/1`, `status/0`, and
+`rollback/1`.
+
+### Step 1 — see what would change
+
+```elixir
+HelloInfra.diff()
+```
+
+This walks the spec and compares it against the pool. On a fresh box
+the output looks like:
+
+```text
+[Zed.Converge.Diff] tank/apps/hello   (create)   compression=lz4
+[Zed.Converge.Diff] :hello             (install)  version=1.0.0
+[Zed.Converge.Diff] snapshot policy   (set)      keep=5 before_deploy=true
+```
+
+`diff/0` returns a list of `%Zed.Converge.Diff{}` structs you can
+pattern-match. It does not touch the filesystem.
+
+### Step 2 — apply
+
+```elixir
+HelloInfra.converge()
+```
+
+Zed builds a plan from the diff, executes each step, and verifies the
+result. The phases:
+
+1. **`zfs create`** for `tank/apps/hello`, with `compression=lz4`.
+2. **install the release** (your `hello-1.0.0.tar.gz` artifact lands
+   in the mounted dataset).
+3. **stamp ZFS properties** — `com.zed:version=1.0.0`,
+   `com.zed:fingerprint=<sha256>`, etc.
+4. **start the release script** (`./bin/hello daemon`).
+5. **verify** — Zed reads back the properties and confirms they match.
+
+If verify fails, Zed rolls back to the pre-deploy snapshot it took at
+the start of step 1. That rollback is one `zfs rollback`. Atomic.
+
+### Step 3 — read state back
+
+```elixir
+HelloInfra.status()
+```
+
+```text
+%{
+  "tank/apps/hello" => %{
+    version: "1.0.0",
+    fingerprint: "sha256:1f2a...",
+    deployed_at: ~U[2026-05-20 14:18:22Z]
+  }
+}
+```
+
+`status/0` doesn't talk to your DSL module at all — it reads the
+properties off the live datasets. If someone runs `zfs set
+com.zed:version=2.0.0 tank/apps/hello` behind your back, `status/0`
+reports the change. Reality is the source of truth.
+
+### Step 4 — ship a version bump
+
+Edit `HelloInfra` and change `version "1.0.0"` to `version "1.0.1"`.
+Recompile. Then:
+
+```elixir
+HelloInfra.diff()
+# [Zed.Converge.Diff] :hello   (update)   version 1.0.0 → 1.0.1
+
+HelloInfra.converge()
+```
+
+Zed snapshots `tank/apps/hello@before-1.0.1` first (the `before_deploy`
+policy), then installs `1.0.1` over the top. Two snapshots now exist:
+`@before-1.0.0` and `@before-1.0.1`.
+
+### Step 5 — roll back
+
+Say `1.0.1` crashes on startup. The deploy itself will have rolled back
+automatically — `converge/1` returns `{:error, :verify_failed, _}` and
+the dataset is restored to `1.0.0`. But suppose verify passed and the
+crash happens an hour later. You roll back manually:
+
+```elixir
+HelloInfra.rollback("@before-1.0.1")
+```
+
+That's one `zfs rollback`. The dataset's contents, the
+`com.zed:version` property, and the file timestamps all revert
+together. The `1.0.1` install simply ceases to have existed.
+
+## What You Just Did
+
+You wrote a 20-line DSL module, ran four function calls against it,
+and walked through the full deploy / version-bump / rollback loop
+without configuring etcd, a state bucket, or anything that resembles
+a control plane. Two pieces did the heavy lifting:
+
+- **The DSL** is just Elixir macros. Your spec is a compile-time
+  artifact; `mix compile` catches typos in `version`, missing
+  `dataset` references, malformed pool names.
+- **ZFS** is the runtime. Properties hold the version, snapshots hold
+  the history, `zfs rollback` is the undo button. Zed is the layer
+  that translates your declarative spec into the right `zfs` and
+  release-script calls.
+
+## Where Next
+
+- **Multi-host deploys** — `converge_coordinated/1` orchestrates the
+  same DSL across N hosts. Health checks run as a phase before the
+  deploy is declared successful; see
+  [`specs/HealthCheck.tla`](../specs/HealthCheck.tla) for the protocol.
+- **Jails** — wrap an app in a FreeBSD jail with `jail :name do ... end`.
+  Zed generates the `jail.conf.d` entry and ties the jail's filesystem
+  to the dataset.
+- **Cluster topology** — `cluster :name do host ... end` declares a
+  set of hosts and their roles. `Zed.Cluster.connect/1` joins them
+  over distributed Erlang.
+- **Live demo notebook** — [`notebooks/cluster-sampling-demo.livemd`](cluster-sampling-demo.livemd)
+  shows two jails (livebook + an MCMC compute backend) connected via
+  `:erpc`, with state pulled across `:erpc.call/4`. No HTTP. No queue.
+
+The full surface lives in `lib/zed/dsl.ex`. Reading the DSL module is
+about 350 lines and worth your time — it's the entirety of zed's API.
