@@ -159,11 +159,14 @@ chronological order. Each line is a real deficit, not a polish item.
       multi-host deploy with ZFS + Bastille + cluster has been
       live-tested only on the dev machines, not on a clean prod-shaped
       target. **Effort: 1-2 weeks live-burn.**
-- [ ] **Health checks wired to convergence.** `app :foo do health
-      :http, url: "..." end` exists in the spec; the executor does not
-      yet wait on health checks before declaring success. Critical:
-      without this, a "successful" deploy can leave the app crashed.
-      **Effort: 1 week.**
+- [x] **Health checks wired to convergence.** Phase 2.5 of
+      `Zed.Cluster.converge_coordinated` runs `:tcp` / `:beam_ping`
+      probes after all hosts converge, retries on failure, and rolls
+      back the deploy if any host fails or an external rollback signal
+      latches. Behaviour pinned by `specs/HealthCheck.tla` (TLC-checked,
+      `NoLatePromotionAfterRollback` covered) and `test/zed/converge/health_test.exs`.
+      HTTP probe still needs a custom `:checker` module — `:httpc`
+      stays out of the default path to skip the `:inets` startup tax.
 - [ ] **Rollback under partial failure.** If a multi-host deploy
       succeeds on hosts A+B and fails on C, `Zed.Cluster.converge_coordinated`
       is supposed to roll all three back. The path exists but hasn't
