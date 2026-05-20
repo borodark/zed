@@ -66,6 +66,11 @@ MyInfra.Prod.status()     # Read state from ZFS
 MyInfra.Prod.rollback("@latest")  # Instant rollback
 ```
 
+> New to Zed? Read [**Zed in 10 Minutes**](docs/zed_10min.md) — a
+> single-host walkthrough (define → diff → converge → bump version →
+> rollback) aimed at Elixir devs who haven't done much ops.
+> Livebook source: [`notebooks/intro_10min.livemd`](notebooks/intro_10min.livemd).
+
 ## Multi-Host Deployment
 
 ```elixir
