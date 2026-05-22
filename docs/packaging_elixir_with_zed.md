@@ -49,6 +49,21 @@ this guide you'll have:
 - A FreeBSD 14 or 15 host with a ZFS pool. The smallest viable setup
   is `zpool create tank /dev/da1` on a spare disk. The host needs SSH
   access and `doas` (or `sudo`) for the user that runs zed.
+- **`doas.conf` configured for nopass escalation by the zed user.**
+  Zed's converge shells out to `mount`, `zfs`, etc. via `doas`. If
+  any rule below `permit nopass :wheel` in `/usr/local/etc/doas.conf`
+  matches the zed user (e.g. `permit persist :wheel`), doas will ask
+  for a password — and since the zed agent runs without a tty, it
+  hangs until SIGTERM. doas matches the LAST rule, so put the
+  `nopass` rule at the end:
+
+  ```
+  permit persist :wheel
+  permit nopass :wheel       # ← must be last for the zed user
+  ```
+
+  Or scope tighter with `permit nopass :wheel cmd mount` etc., as
+  `docs/doas.conf.zedops` shows.
 - The Zed repo cloned and built: `git clone … && mix deps.get && mix compile`.
 - Your Elixir app builds an OTP release via `mix release`. If it
   doesn't yet, the simplest `releases` block is six lines:
