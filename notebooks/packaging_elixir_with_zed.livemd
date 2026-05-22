@@ -1,0 +1,383 @@
+# Packaging an Elixir App for Zed Deploy
+
+A walkthrough for the moment after `mix release` finishes successfully.
+You have a release tarball; mainstream advice tells you to put it in a
+Docker image, push to a registry, and let kubernetes pull it. This
+guide takes a different turn: you'll mount the tarball directly with
+`tarfs(5)`, declare the deployment as data, and let `zfs rollback` be
+your undo button.
+
+The concrete artifact throughout is the **eXMC trader** — a multi-
+account Bayesian trading process that runs continuously and survives
+both code upgrades and host reboots without losing its inflight state.
+But everything below applies to any Elixir release: a Phoenix app, a
+Broadway pipeline, a GenServer-heavy library.
+
+## Why this exists
+
+You can ship an Elixir release in several ways. The mainstream answer
+in 2026 is Docker → registry → kubernetes / Fly.io / Render. The
+mainstream answer works. This guide isn't trying to dethrone it.
+
+What it offers, instead, is a path for the case where:
+
+- You have a FreeBSD host (or a few of them) and don't want a
+  kubernetes control plane on top.
+- You want state — version, deploy time, instance config — to live
+  *with* the artifact on disk, not in an external store that can
+  drift.
+- You want rollback to be a single `zfs rollback` call, not a
+  `kubectl rollout undo` that triggers a re-pull from a registry.
+- You want the deployment to be *spec-shaped Elixir code*, not YAML.
+
+The substrate is `tarfs(5)` (FreeBSD 14+, kernel-mounted POSIX tar) +
+ZFS user properties + a small Elixir DSL called Zed. By the end of
+this guide you'll have:
+
+1. A trader release built locally.
+2. The release tarred for `tarfs(5)` consumption.
+3. A `MyDeploy` module that declares the deployment.
+4. `MyDeploy.converge/0` reconciling a real host to match the spec.
+5. A `MyDeploy.rollback/1` call that undoes a bad version in one
+   `zfs rollback`.
+
+## Prerequisites
+
+- A FreeBSD 14 or 15 host with a ZFS pool. The smallest viable setup
+  is `zpool create tank /dev/da1` on a spare disk. The host needs SSH
+  access and `doas` (or `sudo`) for the user that runs zed.
+- The Zed repo cloned and built: `git clone … && mix deps.get && mix compile`.
+- Your Elixir app builds an OTP release via `mix release`. If it
+  doesn't yet, the simplest `releases` block is six lines:
+
+  ```elixir
+  defp releases do
+    [
+      exmc: [
+        include_executables_for: [:unix],
+        applications: [runtime_tools: :permanent],
+        strip_beams: Mix.env() == :prod
+      ]
+    ]
+  end
+  ```
+
+This guide assumes you're building the release on a build host (Mac
+or Linux) and deploying to a FreeBSD target. If you're building
+directly on the target, the cross-compile step in §1 collapses.
+
+## §1 — Build the release
+
+```sh
+cd /path/to/your/app
+MIX_ENV=prod mix deps.get --only prod
+MIX_ENV=prod mix release exmc
+```
+
+This produces `_build/prod/rel/exmc/`:
+
+```text
+_build/prod/rel/exmc/
+├── bin/
+│   ├── exmc          # release control script
+│   └── exmc.bat
+├── erts-15.2.7.2/    # vendored Erlang runtime
+├── lib/              # all dependency .beam files
+├── releases/
+│   └── 1.0.0/
+│       ├── sys.config
+│       ├── vm.args
+│       └── env.sh
+└── tmp/
+```
+
+About 30–50 MB for a typical Phoenix or Broadway app. For eXMC trader
+(includes Nx + nx_vulkan + spirit C++ NIF) the tree is ~80 MB.
+
+The release is **self-contained**. The host doesn't need Erlang
+installed; the vendored `erts-` runtime ships in the tree.
+
+## §2 — Tar for tarfs(5)
+
+The next step is what makes this different from Docker. Instead of
+copying the directory tree to the target and starting it from there,
+you produce a **single uncompressed tar file** that the kernel mounts
+as a filesystem:
+
+```sh
+cd _build/prod/rel
+tar cf /tmp/exmc-1.0.0.tar exmc/
+ls -lh /tmp/exmc-1.0.0.tar
+# -rw-r--r--  1 io io  82M  May 22 18:30 /tmp/exmc-1.0.0.tar
+```
+
+Notes:
+
+- **Uncompressed.** `tarfs(5)` needs raw POSIX tar, not gzipped. Use
+  `tar cf`, not `tar czf`.
+- **No top-level extras.** The tarball's root is the release tree.
+  When mounted at `/opt/exmc`, the layout becomes `/opt/exmc/bin/exmc`,
+  `/opt/exmc/lib/...`, etc.
+- **Reproducible.** Same release input + same `tar` invocation =
+  byte-identical output. (Use GNU tar's `--mtime` flag if you need
+  timestamps stamped for bit-for-bit reproducibility.)
+
+Copy the tar to the target:
+
+```sh
+scp /tmp/exmc-1.0.0.tar root@deploy-host:/var/zed/artifacts/
+```
+
+Zed expects artifacts at `/var/zed/<deploy>/artifacts/` by default.
+That directory itself lives on a ZFS dataset Zed will manage.
+
+## §3 — The zed deployment spec
+
+Now the Elixir part. Write a module that uses `Zed.DSL`:
+
+```elixir
+defmodule TraderDeploy do
+  use Zed.DSL
+
+  deploy :exmc, pool: "tank" do
+    # ZFS dataset where the tar artifact lives
+    dataset "exmc/artifacts" do
+      compression :lz4
+    end
+
+    # tarfs(5) mount: the .tar from §2 becomes a read-only
+    # filesystem at /opt/exmc
+    tarfs :exmc_release do
+      tar_path "/var/zed/exmc/artifacts/exmc-1.0.0.tar"
+      mount "/opt/exmc"
+    end
+
+    # The app itself — a BEAM release with a known entry point
+    app :exmc do
+      release_root "/opt/exmc"
+      version "1.0.0"
+      node_name :"trader@localhost"
+      cookie {:env, "EXMC_COOKIE"}
+    end
+
+    # Health probes — Zed Phase 2.5 runs these after converge,
+    # rolls back if any host fails them. :beam_ping verifies the
+    # node is up and responding to distributed-Erlang traffic.
+    health :exmc do
+      probe :beam_ping, target: "trader@localhost", timeout: 5_000
+      retries 3
+      backoff 1_000
+    end
+
+    # Start the release as a long-running service. Zed will run
+    # `bin/exmc daemon` after the artifact is mounted and health
+    # gates have passed.
+    service_run :exmc_daemon do
+      command "/opt/exmc/bin/exmc daemon"
+      depends_on [:exmc_release, :exmc]
+      env %{
+        "EXMC_COOKIE" => "secret-cookie",
+        "EXMC_VULKAN_BACKEND" => "vulkano",
+        "ACCOUNTS_CONFIG" => "/var/zed/exmc/config/accounts.config"
+      }
+    end
+
+    snapshots do
+      before_deploy true
+      keep 5
+    end
+  end
+end
+```
+
+Twenty-five lines of DSL. Each verb maps to a thing the converge loop
+will create, mount, start, or check.
+
+The `app :exmc` entry doesn't install the release — `tarfs` already
+did that by mounting `/opt/exmc`. The `app` declaration tells Zed
+the version + how to talk to the node for health checks and rollback.
+
+## §4 — First converge
+
+```elixir
+# In an iex session on the target (or via remsh)
+TraderDeploy.diff()
+```
+
+This walks the spec, compares against the live host, and returns a
+list of changes. On a fresh box you'll see something like:
+
+```text
+[Zed.Converge.Diff] tank/exmc/artifacts      (create)   compression=lz4
+[Zed.Converge.Diff] tarfs :exmc_release       (mount)    /opt/exmc
+[Zed.Converge.Diff] :exmc                     (install)  version=1.0.0
+[Zed.Converge.Diff] health :exmc              (set)      :beam_ping
+[Zed.Converge.Diff] service_run :exmc_daemon  (start)
+[Zed.Converge.Diff] snapshot policy           (set)      keep=5 before_deploy=true
+```
+
+`diff/0` doesn't touch the filesystem. Apply with:
+
+```elixir
+TraderDeploy.converge()
+```
+
+Zed's coordinated converge does this:
+
+1. **Snapshot** the existing `tank/exmc/artifacts` dataset (if any) —
+   the rollback point if anything later fails.
+2. **Create** the dataset if it doesn't exist.
+3. **Mount** `/var/zed/exmc/artifacts/exmc-1.0.0.tar` at `/opt/exmc`
+   via `tarfs(5)`. One syscall; no extraction; mount latency is
+   dominated by reading the central directory of the tar
+   (~milliseconds for a 100 MB tar).
+4. **Stamp** ZFS properties on the dataset: `com.zed:version=1.0.0`,
+   `com.zed:fingerprint=<sha256>`, `com.zed:deployed_at=<iso8601>`.
+5. **Start** the service: `service_run` exec's `/opt/exmc/bin/exmc daemon`
+   as a managed process.
+6. **Health-check**: probe `:beam_ping` 3 times with 1s backoff until
+   the BEAM responds. If all retries fail across all hosts, Zed
+   rolls back the snapshot from step 1 atomically.
+7. **Phase 2.5 gate**: Zed only declares the deploy successful after
+   the health probes pass. Spec: `specs/HealthCheck.tla` —
+   model-checked, with `NoLatePromotionAfterRollback` invariant
+   covered.
+
+Total wall time on a quiet host: ~3 seconds.
+
+## §5 — Verify and read back state
+
+```elixir
+TraderDeploy.status()
+```
+
+```text
+%{
+  "tank/exmc/artifacts" => %{
+    version: "1.0.0",
+    fingerprint: "sha256:1f2a...",
+    deployed_at: ~U[2026-05-22 18:42:11Z],
+    mount: "/opt/exmc",
+    health: :ok,
+    service: %{name: :exmc_daemon, pid: 9842, uptime: 187}
+  }
+}
+```
+
+`status/0` doesn't talk to your DSL module. It reads the live state:
+ZFS properties from the dataset, mount status from `mount(8)`, PID
+and uptime from the service supervisor. Reality is the source of
+truth — if someone runs `zfs set com.zed:version=2.0.0 tank/exmc/artifacts`
+behind your back, `status/0` reports the change.
+
+## §6 — Ship a version bump
+
+Build version 1.0.1 of the trader:
+
+```sh
+# bump version in mix.exs, then:
+MIX_ENV=prod mix release exmc
+tar cf /tmp/exmc-1.0.1.tar -C _build/prod/rel exmc/
+scp /tmp/exmc-1.0.1.tar root@deploy-host:/var/zed/exmc/artifacts/
+```
+
+Update the DSL spec — one character changes:
+
+```elixir
+tarfs :exmc_release do
+  tar_path "/var/zed/exmc/artifacts/exmc-1.0.1.tar"  # was 1.0.0
+  mount "/opt/exmc"
+end
+
+app :exmc do
+  release_root "/opt/exmc"
+  version "1.0.1"                                     # was 1.0.0
+  # ... rest unchanged
+end
+```
+
+Recompile, re-converge:
+
+```elixir
+TraderDeploy.diff()
+# [Zed.Converge.Diff] :exmc           (update)  1.0.0 → 1.0.1
+# [Zed.Converge.Diff] tarfs           (remount) → /var/zed/exmc/artifacts/exmc-1.0.1.tar
+
+TraderDeploy.converge()
+```
+
+Zed snapshots before the deploy (`tank/exmc/artifacts@before-1.0.1`),
+unmounts the old tar, mounts the new tar at the same path, restarts
+the service, runs health probes. If `:beam_ping` fails inside the
+configured retries, **the deploy auto-rolls back to 1.0.0** —
+`converge/0` returns `{:error, :health_failed, ...}` and the snapshot
+is restored.
+
+## §7 — Manual rollback
+
+Sometimes the deploy passes its health check and breaks an hour
+later (the new version has a subtle bug that takes time to surface).
+You can roll back manually:
+
+```elixir
+TraderDeploy.rollback("@before-1.0.1")
+```
+
+One `zfs rollback`. The artifact dataset's contents — the tar files,
+the ZFS properties — all revert atomically to the snapshot. Zed
+remounts `/opt/exmc` from the now-restored tar at the path that was
+active at snapshot time. The service is restarted against the
+restored release.
+
+This is **constant-time regardless of release size**. A 1 MB release
+rolls back in the same wall time as a 1 GB release. ZFS snapshots
+are O(1) at create and at rollback; the bytes don't move.
+
+## What's different from Docker / k8s
+
+| Concern | Docker / k8s | Zed |
+|---|---|---|
+| Artifact format | Layered OCI image | Uncompressed POSIX tar |
+| Distribution | Registry push/pull | `scp` (or `zfs send`) |
+| Local extraction | Per-layer overlayfs at start | None — `tarfs(5)` mounts the bytes in place |
+| Boot time | Layer pulls + extract + start | Mount + start (~ms) |
+| State of "what's deployed" | etcd / control-plane | ZFS user properties on the dataset |
+| Rollback | `kubectl rollout undo` + re-pull | `zfs rollback` (O(1)) |
+| Health gate | k8s liveness/readiness | `Zed.Converge.Health` + Phase 2.5 |
+| Multi-host coordination | k8s controller | `Zed.Cluster.converge_coordinated/1` |
+| Spec | YAML | Elixir DSL macros |
+
+The substrate is different (FreeBSD + ZFS + tarfs vs Linux + cgroups
++ overlayfs) but the deployment model is **functionally similar**.
+The DSL replaces YAML; ZFS replaces etcd; tarfs replaces overlayfs;
+`zfs rollback` replaces image-tag pinning. Each substitution is
+defensible on its own; the bundle is what makes it interesting.
+
+## Where to go next
+
+- **Multi-host deploys.** Replace `deploy :exmc, pool: ...` with a
+  `cluster :prod do host :h1 ... end` block. `converge_coordinated/1`
+  runs the same spec against N hosts in lock-step, two-phase, with
+  health probes per host before any commit. The protocol is
+  TLA+-verified (`specs/HealthCheck.tla`).
+- **Secrets.** This guide hardcoded a cookie. Real deployments
+  should use a ZFS-managed secrets dataset with restricted
+  permissions. The secrets pipeline is the next big item on
+  zed's roadmap; track it in `docs/`.
+- **Production checklist.** See `docs/dual-mac-runbook-results.md`
+  for a real two-host trader deploy that ran through this flow.
+
+## What you just built
+
+A release artifact, in a tar, mounted via the kernel, declared by a
+~25-line Elixir module, with health-checked atomic rollback. No
+container runtime. No registry. No control plane. The state of
+"what's deployed" lives next to the artifact, in the same ZFS
+property tree that `zfs send | zfs receive` replicates verbatim.
+
+If you've used Docker, the model is recognisable: a build pipeline
+that produces an artifact, a manifest that declares where it
+should run, a control loop that reconciles intent to reality, and
+a rollback story that doesn't depend on the build cache surviving.
+What Zed swaps out is the **mechanism**, not the model. The DSL
+maps one-for-one onto the verbs you already think in.

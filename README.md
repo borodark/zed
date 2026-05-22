@@ -70,6 +70,12 @@ MyInfra.Prod.rollback("@latest")  # Instant rollback
 > single-host walkthrough (define → diff → converge → bump version →
 > rollback) aimed at Elixir devs who haven't done much ops.
 > Livebook source: [`notebooks/intro_10min.livemd`](notebooks/intro_10min.livemd).
+>
+> Have a real Elixir release and want to deploy it? Read
+> [**Packaging an Elixir App for Zed Deploy**](docs/packaging_elixir_with_zed.md) —
+> takes you from `mix release` to a running, health-gated, atomically-
+> rollbackable trader on FreeBSD + ZFS, in ~7 steps. Concrete example
+> is the eXMC trader. Livebook source: [`notebooks/packaging_elixir_with_zed.livemd`](notebooks/packaging_elixir_with_zed.livemd).
 
 ## Multi-Host Deployment
 
