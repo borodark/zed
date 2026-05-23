@@ -78,6 +78,13 @@ defmodule Zed.Examples.TraderWalkthrough do
       # the running trader. Add service_run back once GPU init
       # works in headless library mode.
       app :exmc_walkthrough do
+        # version + dataset drive Zed's stamp_app_properties step
+        # (lib/zed/converge/executor.ex). Without them, pool_path
+        # resolves to nil and the ZFS com.zed:* tags get skipped,
+        # leaving snapshots named zed-deploy-unknown-* and status/0
+        # returning empty version/fingerprint/deployed_at fields.
+        version "0.1.0"
+        dataset "zed/exmc-trial/artifacts"
         node_name :"walkthrough@mac"
         cookie {:env, "RELEASE_COOKIE"}
         env_file "/var/db/exmc-trial/env-walkthrough"

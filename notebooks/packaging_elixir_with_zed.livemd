@@ -212,6 +212,17 @@ The `app :exmc` entry doesn't install the release — `tarfs` already
 did that by mounting `/opt/exmc`. The `app` declaration tells Zed
 the version + how to talk to the node for health checks and rollback.
 
+**Both `version` and `dataset` (or `pool_path`) are required.** They
+drive `Zed.Converge.Executor.stamp_app_properties/3`, which writes
+`com.zed:version`, `com.zed:app`, `com.zed:deployed_at`,
+`com.zed:node_name`, and `com.zed:deployed_by` onto the named
+dataset. Omitting either causes the executor to silently treat
+`pool_path` as `nil` and skip the entire stamping step — the
+converge still returns `:ok`, but `status/0` will show empty
+metadata and snapshots get named `zed-deploy-unknown-*`. Learned
+the hard way on the mac-247 walkthrough run; documented here so
+the next reader doesn't repeat it.
+
 ## §4 — First converge
 
 ```elixir
