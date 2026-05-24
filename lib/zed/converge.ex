@@ -130,15 +130,69 @@ defmodule Zed.Converge do
       if ds do
         full_ds = "#{ir.pool}/#{ds}"
 
-        Zed.ZFS.Property.set_many(full_ds, %{
+        # Look up any tarfs mount whose name matches the app's id or
+        # release. Hash the tar to produce a content-addressed
+        # fingerprint that travels with the dataset and survives
+        # zfs send | zfs receive. This is what makes "what's
+        # actually deployed" answerable from the artifact dataset
+        # alone, without consulting an external store.
+        {tar_path, fingerprint} = tar_fingerprint(ir, app)
+
+        props = %{
           managed: "true",
           app: to_string(app.id),
           version: app.config[:version] || "unknown",
           deployed_at: ts,
           deployed_by: whoami()
-        })
+        }
+
+        props =
+          props
+          |> maybe_put_string(:tar_path, tar_path)
+          |> maybe_put_string(:fingerprint, fingerprint)
+          |> maybe_put_string(:built_at, app.config[:built_at])
+          |> maybe_put_string(:built_by, app.config[:built_by])
+          |> maybe_put_string(:git_sha, app.config[:git_sha])
+
+        Zed.ZFS.Property.set_many(full_ds, props)
       end
     end)
+  end
+
+  defp maybe_put_string(map, _key, nil), do: map
+  defp maybe_put_string(map, key, value), do: Map.put(map, key, to_string(value))
+
+  # Return {tar_path, sha256_hex} for the tarfs mount that backs
+  # this app, or {nil, nil} if there isn't one. Tarfs is the
+  # universal artifact format for zed-managed apps; if the user
+  # used a different mechanism (jail/release_dir/etc.) we just
+  # skip these fields.
+  defp tar_fingerprint(%IR{tarfs_mounts: mounts}, app) do
+    mount =
+      Enum.find(mounts, fn m ->
+        m.id == app.id or m.config[:app] == app.id
+      end) ||
+      List.first(mounts)
+
+    case mount do
+      nil ->
+        {nil, nil}
+
+      %{config: %{tar_path: path}} ->
+        case sha256_file(path) do
+          {:ok, hex} -> {path, "sha256:" <> hex}
+          {:error, _} -> {path, nil}
+        end
+
+      _ ->
+        {nil, nil}
+    end
+  end
+
+  defp sha256_file(path) do
+    with {:ok, bin} <- File.read(path) do
+      {:ok, :crypto.hash(:sha256, bin) |> Base.encode16(case: :lower)}
+    end
   end
 
   defp find_target_version(%IR{apps: [app | _]}) do
