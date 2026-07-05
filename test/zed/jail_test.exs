@@ -109,6 +109,89 @@ defmodule Zed.JailTest do
       assert create_step.deps == ["jail:install:web_jail"]
     end
 
+    test "depends_on atom adds jail:create dep to create step" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :app_jail,
+            type: :jail,
+            config: %{dataset: "jails/app", depends_on: :pg}
+          },
+          action: :create,
+          current: %{jail: nil},
+          desired: %{dataset: "jails/app"},
+          changes: [{:jail, nil, "app_jail"}]
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "jeff")
+      create_step = Enum.find(plan.steps, &(&1.type == :jail and &1.action == :create))
+
+      assert "jail:create:pg" in create_step.deps
+      assert "jail:install:app_jail" in create_step.deps
+    end
+
+    test "depends_on list adds multiple jail:create deps" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :plausible,
+            type: :jail,
+            config: %{dataset: "jails/plausible", depends_on: [:pg, :ch]}
+          },
+          action: :create,
+          current: %{jail: nil},
+          desired: %{dataset: "jails/plausible"},
+          changes: [{:jail, nil, "plausible"}]
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "jeff")
+      create_step = Enum.find(plan.steps, &(&1.type == :jail and &1.action == :create))
+
+      assert "jail:create:pg" in create_step.deps
+      assert "jail:create:ch" in create_step.deps
+    end
+
+    test "topological sort puts upstream jail:create before downstream" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :app_jail,
+            type: :jail,
+            config: %{dataset: "jails/app", depends_on: :pg}
+          },
+          action: :create,
+          current: %{jail: nil},
+          desired: %{},
+          changes: []
+        },
+        %Diff{
+          resource: %Node{
+            id: :pg,
+            type: :jail,
+            config: %{dataset: "jails/pg"}
+          },
+          action: :create,
+          current: %{jail: nil},
+          desired: %{},
+          changes: []
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "jeff")
+
+      creates =
+        plan.steps
+        |> Enum.filter(&(&1.type == :jail and &1.action == :create))
+        |> Enum.map(& &1.args.jail)
+
+      pg_idx = Enum.find_index(creates, &(&1 == :pg))
+      app_idx = Enum.find_index(creates, &(&1 == :app_jail))
+
+      assert pg_idx < app_idx, "pg :create must come before app_jail :create"
+    end
+
     test "jail steps depend on dataset" do
       diff = [
         %Diff{

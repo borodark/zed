@@ -209,6 +209,11 @@ defmodule Zed.Converge.Plan do
   end
 
   defp build_jail_create_step(jail_id, config, ds) do
+    upstream_deps =
+      config
+      |> depends_on_list()
+      |> Enum.map(&"jail:create:#{&1}")
+
     %Step{
       id: "jail:create:#{jail_id}",
       type: :jail,
@@ -218,8 +223,18 @@ defmodule Zed.Converge.Plan do
         dataset: ds,
         contains: config[:contains]
       },
-      deps: ["jail:install:#{jail_id}"]
+      deps: ["jail:install:#{jail_id}" | upstream_deps]
     }
+  end
+
+  # Normalize depends_on to a list of atoms. Validation guarantees
+  # each entry references a declared jail.
+  defp depends_on_list(config) do
+    case config[:depends_on] do
+      nil -> []
+      dep when is_atom(dep) -> [dep]
+      deps when is_list(deps) -> deps
+    end
   end
 
   # --- Step Builders: Apps ---
@@ -344,6 +359,8 @@ defmodule Zed.Converge.Plan do
   # being created — only the parent secrets dataset, which the
   # bootstrap step ensures.
   defp sort_by_type(steps) do
+    depth = topo_depth(steps)
+
     steps
     |> Enum.sort_by(fn step ->
       type_priority = %{
@@ -365,8 +382,52 @@ defmodule Zed.Converge.Plan do
 
       {
         Map.get(type_priority, step.type, 99),
-        Map.get(action_priority, step.action, 99)
+        Map.get(action_priority, step.action, 99),
+        Map.get(depth, step.id, 0)
       }
     end)
+  end
+
+  # Compute a topological depth (longest-path from a root) for each
+  # step id from its declared `deps`. Depth is used as a tie-breaker
+  # inside sort_by_type/1 so steps at the same (type, action)
+  # bucket that reference each other via `deps` execute in the right
+  # order — most importantly, jail_A's :create waits for jail_B's
+  # :create when jail_A `depends_on :jail_B`.
+  #
+  # Steps whose deps reference an id not in `steps` (cross-bucket
+  # deps like "jail:install:X" from the same jail) don't influence
+  # depth here — those deps still document intent and are honored by
+  # the type/action bucketing which places install before create.
+  defp topo_depth(steps) do
+    by_id = Map.new(steps, fn s -> {s.id, s} end)
+
+    Enum.reduce(steps, %{}, fn step, memo ->
+      {memo2, _d} = compute_depth(step.id, by_id, memo)
+      memo2
+    end)
+  end
+
+  defp compute_depth(id, by_id, memo) do
+    case Map.fetch(memo, id) do
+      {:ok, d} ->
+        {memo, d}
+
+      :error ->
+        case Map.fetch(by_id, id) do
+          :error ->
+            {Map.put(memo, id, 0), 0}
+
+          {:ok, step} ->
+            {memo2, max_parent} =
+              Enum.reduce(step.deps, {memo, -1}, fn dep_id, {m, mx} ->
+                {m2, d} = compute_depth(dep_id, by_id, m)
+                {m2, max(mx, d)}
+              end)
+
+            d = max_parent + 1
+            {Map.put(memo2, id, d), d}
+        end
+    end
   end
 end
