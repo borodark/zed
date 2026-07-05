@@ -110,7 +110,13 @@ defmodule Zed.Platform.Bastille do
     with :ok <- validate_name(name) do
       fstype = Keyword.get(opts, :fstype, "nullfs")
       mode = opts |> Keyword.get(:mode, "ro") |> to_string()
-      classify(runner().run(:mount, [name, host_path, jail_path, fstype, mode], []))
+
+      # Bastille validates the mount argv against fstab format, which
+      # is six columns: <fs> <mount_point> <type> <options> <dump>
+      # <pass>. Anything short gets rejected with
+      # "Detected invalid fstab options in FSTAB." even though the
+      # dump/pass columns are irrelevant for a live mount.
+      classify(runner().run(:mount, [name, host_path, jail_path, fstype, mode, "0", "0"], []))
     end
   end
 

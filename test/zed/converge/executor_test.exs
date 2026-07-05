@@ -176,7 +176,8 @@ defmodule Zed.Converge.ExecutorTest do
 
       calls = Mock.calls()
       assert [{:cmd, ["pg", "mount"], _}, {:mount, mount_argv, _}] = calls
-      assert mount_argv == ["pg", "/mnt/jeff/secrets", "/var/db/zed/secrets", "nullfs", "ro"]
+      assert mount_argv ==
+               ["pg", "/mnt/jeff/secrets", "/var/db/zed/secrets", "nullfs", "ro", "0", "0"]
     end
 
     test "short-circuits when jail_path is already mounted" do
