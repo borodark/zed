@@ -94,7 +94,8 @@ defmodule Zed.Converge.Executor do
       hostname: args.hostname,
       ip4: args.ip4,
       ip6: args.ip6,
-      vnet: args.vnet
+      vnet: args.vnet,
+      jail_params: args[:jail_params] || []
     }
 
     jail_name = args.jail |> to_string()

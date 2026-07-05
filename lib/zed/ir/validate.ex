@@ -11,6 +11,7 @@ defmodule Zed.IR.Validate do
     * `check_jail_contains` — jail `contains` references a declared app
     * `check_jail_packages` — packages must be a list of binary strings
     * `check_jail_depends_on` — depends_on entries reference declared jails
+    * `check_jail_params` — jail_param values are bool/int/binary
     * `check_no_inline_secrets` — cookies must use {:env,_}, {:file,_}, or {:secret,_}
     * `check_secret_refs` — secret slots and fields exist in Catalog
     * `check_cluster_cookies` — same cookie hygiene as apps
@@ -27,6 +28,7 @@ defmodule Zed.IR.Validate do
     check_jail_contains(ir)
     check_jail_packages(ir)
     check_jail_depends_on(ir)
+    check_jail_params(ir)
     check_no_inline_secrets(ir)
     check_secret_refs(ir)
     check_cluster_cookies(ir)
@@ -103,6 +105,27 @@ defmodule Zed.IR.Validate do
           raise Zed.ValidationError,
                 "jail #{inspect(jail.id)} depends_on #{inspect(dep)} which is not a declared jail"
         end
+      end)
+    end)
+  end
+
+  # jail_param values must be primitives that render safely into jail.conf:
+  # boolean, integer, or binary. Keys must be binary.
+  defp check_jail_params(%IR{} = ir) do
+    Enum.each(ir.jails, fn jail ->
+      params = jail.config[:jail_params] || []
+
+      Enum.each(params, fn
+        {k, _v} when not is_binary(k) ->
+          raise Zed.ValidationError,
+                "jail #{inspect(jail.id)} jail_param key #{inspect(k)} must be a string"
+
+        {_k, v} when is_boolean(v) or is_integer(v) or is_binary(v) ->
+          :ok
+
+        {k, v} ->
+          raise Zed.ValidationError,
+                "jail #{inspect(jail.id)} jail_param #{inspect(k)} value #{inspect(v)} must be boolean, integer, or string"
       end)
     end)
   end

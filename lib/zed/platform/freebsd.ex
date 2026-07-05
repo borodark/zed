@@ -161,6 +161,7 @@ defmodule Zed.Platform.FreeBSD do
     ip4 = config[:ip4]
     ip6 = config[:ip6]
     vnet = config[:vnet] || false
+    extra_params = config[:jail_params] || []
 
     # Build parameters
     params =
@@ -175,6 +176,7 @@ defmodule Zed.Platform.FreeBSD do
       |> maybe_add_ip4(ip4, vnet)
       |> maybe_add_ip6(ip6, vnet)
       |> maybe_add_vnet(vnet)
+      |> append_extra_params(extra_params)
       |> format_jail_params()
 
     """
@@ -195,10 +197,24 @@ defmodule Zed.Platform.FreeBSD do
   defp maybe_add_vnet(params, false), do: params
   defp maybe_add_vnet(params, true), do: params ++ [{"vnet", nil}]
 
+  defp append_extra_params(params, extras) do
+    Enum.reduce(extras, params, fn {key, value}, acc ->
+      acc ++ [{key, render_param_value(value)}]
+    end)
+  end
+
+  # jail.conf values: booleans render as "true"/"false" without quotes;
+  # ints render bare; strings quoted by format_jail_params/1.
+  defp render_param_value(true), do: {:bare, "true"}
+  defp render_param_value(false), do: {:bare, "false"}
+  defp render_param_value(v) when is_integer(v), do: {:bare, Integer.to_string(v)}
+  defp render_param_value(v) when is_binary(v), do: v
+
   defp format_jail_params(params) do
     params
     |> Enum.map(fn
       {key, nil} -> "    #{key};"
+      {key, {:bare, val}} -> "    #{key} = #{val};"
       {key, val} -> "    #{key} = \"#{val}\";"
     end)
     |> Enum.join("\n")

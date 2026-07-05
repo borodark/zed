@@ -201,7 +201,8 @@ defmodule Zed.Converge.Plan do
         hostname: config[:hostname] || "#{jail_id}.local",
         ip4: config[:ip4],
         ip6: config[:ip6],
-        vnet: config[:vnet] || false
+        vnet: config[:vnet] || false,
+        jail_params: config[:jail_params] || []
       },
       deps: config[:dataset] |> maybe_dataset_dep()
     }

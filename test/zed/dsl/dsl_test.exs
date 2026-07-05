@@ -313,6 +313,29 @@ defmodule Zed.DSLTest do
       assert opts.mode == :ro
     end
 
+    test "jail with jail_param entries" do
+      defmodule JailParamDeploy do
+        use Zed.DSL
+
+        deploy :jp, pool: "tank" do
+          dataset "jails/pg" do
+            compression :lz4
+          end
+
+          jail :pg do
+            dataset "jails/pg"
+            ip4 "10.17.89.20/24"
+            jail_param "allow.sysvipc", true
+            jail_param "children.max", 4
+          end
+        end
+      end
+
+      ir = JailParamDeploy.__zed_ir__()
+      [jail] = ir.jails
+      assert jail.config.jail_params == [{"allow.sysvipc", true}, {"children.max", 4}]
+    end
+
     test "jail with inline app desugars into top-level app + contains" do
       defmodule InlineAppJailDeploy do
         use Zed.DSL

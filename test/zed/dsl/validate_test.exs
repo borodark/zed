@@ -372,6 +372,64 @@ defmodule Zed.IR.ValidateTest do
     end
   end
 
+  describe "jail_param validation" do
+    test "accepts boolean, integer, and string values" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{
+            id: :pg,
+            type: :jail,
+            config: %{
+              jail_params: [
+                {"allow.sysvipc", true},
+                {"children.max", 4},
+                {"osrelease", "13.2-RELEASE"}
+              ]
+            }
+          }
+        ]
+      }
+
+      assert Validate.run!(ir) == ir
+    end
+
+    test "rejects non-string key" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{jail_params: [{:atom_key, true}]}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/jail_param key.*must be a string/, fn ->
+        Validate.run!(ir)
+      end
+    end
+
+    test "rejects non-primitive value" do
+      ir = %IR{
+        name: :test,
+        pool: "tank",
+        datasets: [],
+        apps: [],
+        jails: [
+          %Node{id: :pg, type: :jail, config: %{jail_params: [{"foo", [:bad]}]}}
+        ]
+      }
+
+      assert_raise Zed.ValidationError, ~r/must be boolean, integer, or string/, fn ->
+        Validate.run!(ir)
+      end
+    end
+  end
+
   describe "jail depends_on validation (S3)" do
     test "accepts depends_on referencing a declared jail" do
       ir = %IR{

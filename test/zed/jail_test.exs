@@ -51,6 +51,24 @@ defmodule Zed.JailTest do
 
       assert conf =~ ~s(host.hostname = "myapp.local";)
     end
+
+    test "renders jail_params — boolean bare, integer bare, string quoted" do
+      conf =
+        FreeBSD.generate_jail_conf("pg", %{
+          path: "/jails/pg",
+          jail_params: [
+            {"allow.sysvipc", true},
+            {"allow.raw_sockets", false},
+            {"children.max", 10},
+            {"osrelease", "13.2-RELEASE"}
+          ]
+        })
+
+      assert conf =~ "allow.sysvipc = true;"
+      assert conf =~ "allow.raw_sockets = false;"
+      assert conf =~ "children.max = 10;"
+      assert conf =~ ~s(osrelease = "13.2-RELEASE";)
+    end
   end
 
   describe "jail plan generation" do
