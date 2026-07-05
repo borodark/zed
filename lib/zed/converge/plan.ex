@@ -202,6 +202,7 @@ defmodule Zed.Converge.Plan do
         ip4: config[:ip4],
         ip6: config[:ip6],
         vnet: config[:vnet] || false,
+        release: config[:release],
         jail_params: config[:jail_params] || []
       },
       deps: config[:dataset] |> maybe_dataset_dep()

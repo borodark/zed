@@ -47,6 +47,7 @@ defmodule Zed.Examples.SmokePathB do
       dataset "jails/smoke_up"
       hostname "smoke-up.local"
       ip4 "10.17.89.90/24"
+      release "15.0-RELEASE"
 
       packages ["curl"]
       jail_param "allow.sysvipc", true
@@ -58,6 +59,7 @@ defmodule Zed.Examples.SmokePathB do
       dataset "jails/smoke_down"
       hostname "smoke-down.local"
       ip4 "10.17.89.91/24"
+      release "15.0-RELEASE"
       depends_on :smoke_up
     end
   end

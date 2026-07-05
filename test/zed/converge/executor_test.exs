@@ -29,6 +29,89 @@ defmodule Zed.Converge.ExecutorTest do
     Executor.run(%Plan{steps: [step], dry_run: false}, Zed.Platform.FreeBSD)
   end
 
+  describe ":jail :install (via Bastille)" do
+    test "skips create when Bastille.exists? returns true" do
+      # Bastille.exists? uses the :list subcommand and grep for the
+      # jail name in column 2. Provide a matching row so exists? is true.
+      Mock.expect(:list, {" JID Name  State\n  1 smoke_up ACTIVE\n", 0})
+
+      step = %Step{
+        id: "jail:install:smoke_up",
+        type: :jail,
+        action: :install,
+        args: %{
+          jail: :smoke_up,
+          path: "/mac_zroot/jails/smoke_up",
+          hostname: "smoke-up.local",
+          ip4: "10.17.89.90/24",
+          ip6: nil,
+          vnet: false,
+          release: nil,
+          jail_params: []
+        }
+      }
+
+      assert {:ok, [{"jail:install:smoke_up", :ok}]} = run_step(step)
+
+      # Only the :list probe; no :create call.
+      calls = Mock.calls()
+      assert Enum.any?(calls, fn {sub, _, _} -> sub == :list end)
+      refute Enum.any?(calls, fn {sub, _, _} -> sub == :create end)
+    end
+
+    test "calls Bastille.create when jail doesn't exist" do
+      # exists? returns false (empty list), then create returns ok.
+      Mock.expect(:list, {" JID Name\n", 0})
+      Mock.expect(:create, {"", 0})
+
+      step = %Step{
+        id: "jail:install:smoke_up",
+        type: :jail,
+        action: :install,
+        args: %{
+          jail: :smoke_up,
+          path: "/mac_zroot/jails/smoke_up",
+          hostname: "smoke-up.local",
+          ip4: "10.17.89.90/24",
+          ip6: nil,
+          vnet: false,
+          release: "15.0-RELEASE",
+          jail_params: []
+        }
+      }
+
+      assert {:ok, [{"jail:install:smoke_up", :ok}]} = run_step(step)
+
+      calls = Mock.calls()
+
+      assert Enum.any?(calls, fn
+               {:create, ["smoke_up", "15.0-RELEASE", "10.17.89.90/24"], _} -> true
+               _ -> false
+             end)
+    end
+
+    test "propagates missing ip4 as :jail_install_failed" do
+      step = %Step{
+        id: "jail:install:foo",
+        type: :jail,
+        action: :install,
+        args: %{
+          jail: :foo,
+          path: "/x",
+          hostname: "foo.local",
+          ip4: nil,
+          ip6: nil,
+          vnet: false,
+          release: nil,
+          jail_params: []
+        }
+      }
+
+      assert {:error, _step, {:jail_install_failed, "foo", {:jail_install_failed, :missing_ip4}},
+              _} = run_step(step)
+    end
+  end
+
   describe ":jail_pkg :install" do
     test "shells out via bastille cmd pkg install -y" do
       Mock.expect(:cmd, {"", 0})

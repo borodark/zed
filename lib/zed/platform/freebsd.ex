@@ -10,6 +10,8 @@ defmodule Zed.Platform.FreeBSD do
 
   @jail_conf_dir "/etc/jail.conf.d"
 
+  alias Zed.Platform.Bastille
+
   @impl true
   def service_start(name) do
     case System.cmd("service", [name, "start"], stderr_to_stdout: true) do
@@ -93,41 +95,66 @@ defmodule Zed.Platform.FreeBSD do
 
   # --- Jail Operations ---
 
-  @doc "Install jail configuration to /etc/jail.conf.d/<name>.conf"
-  def jail_install(name, config) do
-    conf = generate_jail_conf(name, config)
-    path = Path.join(@jail_conf_dir, "#{name}.conf")
+  @doc """
+  Install a jail via `bastille create`.
 
-    with :ok <- File.mkdir_p(@jail_conf_dir),
-         :ok <- File.write(path, conf) do
+  Idempotent: skips creation when `Bastille.exists?/1` reports the
+  name is already registered. If `config[:jail_params]` is a non-empty
+  list, appends those params to the bastille-generated jail.conf
+  block (`/usr/local/bastille/jails/<name>/jail.conf`). Params take
+  effect on the next jail start.
+
+  `config[:release]` overrides the Bastille adapter's `default_release`.
+  """
+  def jail_install(name, config) do
+    ip4 = config[:ip4]
+    release = config[:release]
+    params = config[:jail_params] || []
+
+    with :ok <- ensure_bastille_jail(name, ip4, release),
+         :ok <- apply_jail_params_overlay(name, params) do
       :ok
     end
   end
 
-  @doc "Create and start a jail."
+  @doc """
+  Start a jail via `bastille start`.
+
+  Idempotent: probes the kernel via `jls` — no-op if the jail is
+  already running.
+  """
   def jail_create(name, _config) do
-    case System.cmd("jail", ["-c", "-f", jail_conf_path(name), name], stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, code} -> {:error, {:jail_create_failed, code, out}}
+    case jail_status(name) do
+      :running ->
+        :ok
+
+      :stopped ->
+        case Bastille.start(name) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:jail_create_failed, reason}}
+        end
     end
   end
 
-  @doc "Stop a running jail."
+  @doc "Stop a running jail via bastille."
   def jail_stop(name) do
-    case System.cmd("jail", ["-r", name], stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, _} -> {:error, out}
+    case Bastille.stop(name) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  @doc "Remove jail configuration file."
+  @doc "Destroy a jail via bastille (removes rootfs + registration)."
   def jail_remove(name) do
-    path = jail_conf_path(name)
+    case Bastille.exists?(name) do
+      true ->
+        case Bastille.destroy(name) do
+          :ok -> :ok
+          {:error, reason} -> {:error, reason}
+        end
 
-    case File.rm(path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, reason}
+      false ->
+        :ok
     end
   end
 
@@ -153,6 +180,79 @@ defmodule Zed.Platform.FreeBSD do
   end
 
   defp jail_conf_path(name), do: Path.join(@jail_conf_dir, "#{name}.conf")
+
+  # Create the jail via bastille if it doesn't exist. Bastille itself
+  # handles the rootfs + jail.conf + registration. IP is required.
+  # Release falls back to Bastille adapter's default.
+  defp ensure_bastille_jail(_name, nil, _release),
+    do: {:error, {:jail_install_failed, :missing_ip4}}
+
+  defp ensure_bastille_jail(name, ip4, release) do
+    if Bastille.exists?(name) do
+      :ok
+    else
+      opts = [ip: ip4] |> maybe_add_release(release)
+
+      case Bastille.create(name, opts) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:jail_install_failed, reason}}
+      end
+    end
+  end
+
+  defp maybe_add_release(opts, nil), do: opts
+  defp maybe_add_release(opts, release), do: [{:release, release} | opts]
+
+  # Append jail.conf params to bastille's per-jail file if they're not
+  # already present. Grep-before-append keeps this idempotent across
+  # re-converge. Params take effect on next jail start.
+  defp apply_jail_params_overlay(_name, []), do: :ok
+
+  defp apply_jail_params_overlay(name, params) do
+    conf_path = bastille_jail_conf(name)
+
+    case File.read(conf_path) do
+      {:ok, contents} ->
+        new_lines =
+          params
+          |> Enum.reject(fn {k, _v} -> String.contains?(contents, "#{k} =") end)
+          |> Enum.map(fn {k, v} -> "    #{k} = #{render_overlay_value(v)};" end)
+
+        case new_lines do
+          [] ->
+            :ok
+
+          _ ->
+            case inject_before_closing_brace(contents, new_lines) do
+              {:ok, patched} -> File.write(conf_path, patched)
+              {:error, reason} -> {:error, {:jail_params_overlay_failed, reason}}
+            end
+        end
+
+      {:error, reason} ->
+        {:error, {:jail_params_overlay_failed, reason}}
+    end
+  end
+
+  defp bastille_jail_conf(name),
+    do: Path.join([Bastille.jails_dir(), name, "jail.conf"])
+
+  defp render_overlay_value(true), do: "true"
+  defp render_overlay_value(false), do: "false"
+  defp render_overlay_value(v) when is_integer(v), do: Integer.to_string(v)
+  defp render_overlay_value(v) when is_binary(v), do: "\"#{v}\""
+
+  # Insert new lines just before the last `}` in the file. Bastille's
+  # jail.conf has one block per file, so this is unambiguous.
+  defp inject_before_closing_brace(contents, new_lines) do
+    case String.split(contents, ~r/\}\s*\z/, parts: 2, include_captures: true) do
+      [head, close, tail] ->
+        {:ok, head <> Enum.join(new_lines, "\n") <> "\n" <> close <> tail}
+
+      _ ->
+        {:error, :closing_brace_not_found}
+    end
+  end
 
   @doc "Generate jail.conf content for a jail."
   def generate_jail_conf(name, config) do

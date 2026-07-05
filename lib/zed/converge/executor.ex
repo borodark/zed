@@ -95,6 +95,7 @@ defmodule Zed.Converge.Executor do
       ip4: args.ip4,
       ip6: args.ip6,
       vnet: args.vnet,
+      release: args[:release],
       jail_params: args[:jail_params] || []
     }
 
