@@ -94,6 +94,27 @@ defmodule Zed.Platform.Bastille do
   end
 
   @doc """
+  Nullfs-mount a host path into a jail.
+
+  Invokes `bastille mount <name> <host_path> <jail_path> [fstype] [mode]`
+  where `fstype` defaults to `"nullfs"` and `mode` defaults to `"ro"`.
+
+  Returns `:ok` on exit 0 or `{:error, {:bastille_exit, code, output}}`
+  otherwise. Callers wanting idempotency should probe the jail's own
+  `mount` table (`cmd(name, ["mount"])`) before invoking this.
+  """
+  @spec mount(name :: binary(), host_path :: binary(), jail_path :: binary(), opts :: keyword()) ::
+          :ok | {:error, term()}
+  def mount(name, host_path, jail_path, opts \\ [])
+      when is_binary(name) and is_binary(host_path) and is_binary(jail_path) and is_list(opts) do
+    with :ok <- validate_name(name) do
+      fstype = Keyword.get(opts, :fstype, "nullfs")
+      mode = opts |> Keyword.get(:mode, "ro") |> to_string()
+      classify(runner().run(:mount, [name, host_path, jail_path, fstype, mode], []))
+    end
+  end
+
+  @doc """
   Returns `true` iff `bastille list` includes a row whose Name
   column equals `name`.
 

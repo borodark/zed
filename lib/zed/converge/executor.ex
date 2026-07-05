@@ -4,8 +4,8 @@ defmodule Zed.Converge.Executor do
 
   Handles `:dataset`, `:app`, `:service`, and `:jail` step types with
   real ZFS/platform operations. Jail sub-steps (`:jail_pkg`,
-  `:jail_mount`, `:jail_svc`) are currently stubs returning
-  `{:ok, :pending}` — real Bastille wiring lands in S6.
+  `:jail_mount`, `:jail_svc`) shell out through
+  `Zed.Platform.Bastille`.
 
   If any step fails, returns immediately with the failure
   so the caller can trigger rollback.
@@ -14,6 +14,7 @@ defmodule Zed.Converge.Executor do
   alias Zed.Converge.{Plan, Step}
   alias Zed.ZFS.{Dataset, Property}
   alias Zed.Beam.Release
+  alias Zed.Platform.Bastille
 
   @doc "Execute a plan. Returns {:ok, results} or {:error, step, reason, partial}."
   def run(%Plan{steps: steps, dry_run: true}, _platform) do
@@ -113,18 +114,53 @@ defmodule Zed.Converge.Executor do
     end
   end
 
-  # --- Jail sub-steps (stubs — real Bastille wiring is S6) ---
+  # --- Jail sub-steps ---
 
+  # pkg install -y runs inside the jail via `bastille cmd`. pkg itself
+  # is idempotent — already-installed packages are a no-op that still
+  # exits 0.
   defp execute_step(%Step{type: :jail_pkg, action: :install, args: args}, _platform) do
-    {:ok, {:jail_pkg_pending, args.jail, args.packages}}
+    jail = to_string(args.jail)
+    packages = Enum.map(args.packages, &to_string/1)
+
+    case Bastille.cmd(jail, ["pkg", "install", "-y" | packages]) do
+      {:ok, _output} -> {:ok, {:jail_pkg_installed, jail, packages}}
+      {:error, reason} -> {:error, {:jail_pkg_failed, jail, packages, reason}}
+    end
   end
 
+  # Nullfs mount is not idempotent — probe the jail's own mount table
+  # first and short-circuit if `jail_path` is already the target of a
+  # mount. Otherwise call `bastille mount`.
   defp execute_step(%Step{type: :jail_mount, action: :create, args: args}, _platform) do
-    {:ok, {:jail_mount_pending, args.jail, args.host_path, args.jail_path}}
+    jail = to_string(args.jail)
+    host_path = to_string(args.host_path)
+    jail_path = to_string(args.jail_path)
+    mode = args[:mode] |> mode_to_string()
+
+    case jail_mount_present?(jail, jail_path) do
+      true ->
+        {:ok, {:jail_mount_already_present, jail, jail_path}}
+
+      false ->
+        case Bastille.mount(jail, host_path, jail_path, mode: mode) do
+          :ok -> {:ok, {:jail_mount_created, jail, host_path, jail_path}}
+          {:error, reason} -> {:error, {:jail_mount_failed, jail, jail_path, reason}}
+        end
+    end
   end
 
+  # sysrc <svc>_enable=YES, then service <svc> start. Both run inside
+  # the jail via `bastille cmd`. sysrc is idempotent. Service start is
+  # gated on a status probe so re-converge is a no-op.
   defp execute_step(%Step{type: :jail_svc, action: :start, args: args}, _platform) do
-    {:ok, {:jail_svc_pending, args.jail, args.service}}
+    jail = to_string(args.jail)
+    service = to_string(args.service)
+
+    with :ok <- enable_service(jail, service),
+         :ok <- start_service_if_needed(jail, service) do
+      {:ok, {:jail_svc_started, jail, service}}
+    end
   end
 
   # Tarfs mount: idempotent.  If the requested mountpoint is already
@@ -324,6 +360,50 @@ defmodule Zed.Converge.Executor do
 
       _ ->
         :not_mounted
+    end
+  end
+
+  # Look for jail_path as the mountpoint (second field of "on <path>")
+  # inside the jail's own `mount` table.
+  defp jail_mount_present?(jail, jail_path) do
+    case Bastille.cmd(jail, ["mount"]) do
+      {:ok, output} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.any?(fn line ->
+          case Regex.run(~r/\s+on\s+(\S+)/, line) do
+            [_, ^jail_path] -> true
+            _ -> false
+          end
+        end)
+
+      {:error, _} ->
+        false
+    end
+  end
+
+  defp mode_to_string(nil), do: "ro"
+  defp mode_to_string(:ro), do: "ro"
+  defp mode_to_string(:rw), do: "rw"
+  defp mode_to_string(bin) when is_binary(bin), do: bin
+
+  defp enable_service(jail, service) do
+    case Bastille.cmd(jail, ["sysrc", "#{service}_enable=YES"]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:jail_svc_enable_failed, jail, service, reason}}
+    end
+  end
+
+  defp start_service_if_needed(jail, service) do
+    case Bastille.cmd(jail, ["service", service, "status"]) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _} ->
+        case Bastille.cmd(jail, ["service", service, "start"]) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, {:jail_svc_start_failed, jail, service, reason}}
+        end
     end
   end
 
