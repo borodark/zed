@@ -364,7 +364,11 @@ defmodule Zed.DSL do
       def converge_coordinated(opts \\ []) do
         hosts = __zed_hosts__()
 
-        if hosts == [] do
+        # Enum.empty?/1 rather than `hosts == []` — the latter trips
+        # Elixir 1.17's set-theoretic type checker when a caller
+        # (e.g. an example module) declares hosts inline and the
+        # inferred return type is a non-empty list at that call site.
+        if Enum.empty?(hosts) do
           # No host declarations — single-host converge
           converge(opts)
         else

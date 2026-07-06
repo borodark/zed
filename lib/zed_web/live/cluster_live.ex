@@ -39,6 +39,14 @@ defmodule ZedWeb.ClusterLive do
     {:noreply, assign(socket, :nodes, Node.list())}
   end
 
+  def handle_info(:do_sampling, socket) do
+    started = socket.assigns.sampling.started
+    elapsed = fn -> now_ms() - started end
+
+    sampling = run_remote_sampling(elapsed)
+    {:noreply, assign(socket, :sampling, sampling)}
+  end
+
   @impl true
   def handle_event("connect_exmc", _params, socket) do
     Node.connect(@exmc_node)
@@ -49,15 +57,6 @@ defmodule ZedWeb.ClusterLive do
   def handle_event("run_sampling", _params, socket) do
     send(self(), :do_sampling)
     {:noreply, assign(socket, :sampling, %{status: :running, started: now_ms()})}
-  end
-
-  @impl true
-  def handle_info(:do_sampling, socket) do
-    started = socket.assigns.sampling.started
-    elapsed = fn -> now_ms() - started end
-
-    sampling = run_remote_sampling(elapsed)
-    {:noreply, assign(socket, :sampling, sampling)}
   end
 
   defp run_remote_sampling(elapsed) do
@@ -78,6 +77,10 @@ defmodule ZedWeb.ClusterLive do
     do: %{status: :error, error: inspect(other), elapsed_ms: elapsed.()}
 
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp sampling_summary(%{mu_mean: mu_mean, mu_std: mu_std, n_samples: n}) do
+    "mu:      #{Float.round(mu_mean, 4)} +/- #{Float.round(mu_std, 4)}\nsamples: #{n}"
+  end
 
   @impl true
   def render(assigns) do
@@ -127,8 +130,7 @@ defmodule ZedWeb.ClusterLive do
         <%= if @sampling && @sampling.status == :done do %>
           <div style="margin-top: 1rem; padding: 0.75rem; background: #0c0f14; border-radius: 3px;">
             <p style="margin: 0; color: #50fa7b;">completed in <%= @sampling.elapsed_ms %>ms</p>
-            <pre style="margin: 0.5rem 0 0; color: #d9d9d9; font-size: 13px;">mu:      <%= Float.round(@sampling.data.mu_mean, 4) %> +/- <%= Float.round(@sampling.data.mu_std, 4) %>
-samples: <%= @sampling.data.n_samples %></pre>
+            <pre style="margin: 0.5rem 0 0; color: #d9d9d9; font-size: 13px;"><%= sampling_summary(@sampling.data) %></pre>
           </div>
         <% end %>
 
