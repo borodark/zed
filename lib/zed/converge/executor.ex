@@ -152,6 +152,36 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  # Run the setup block's ops sequentially, gated on a content hash
+  # so re-converge is a no-op when the block hasn't changed. Hash is
+  # stored at <jails_dir>/<jail>/zed-setup.hash (plain hex).
+  defp execute_step(%Step{type: :jail_setup, action: :run, args: args}, _platform) do
+    jail = to_string(args.jail)
+    ops = args.ops || []
+    hash = setup_ops_hash(ops)
+    hash_path = "#{Bastille.jails_dir()}/#{jail}/zed-setup.hash"
+
+    case File.read(hash_path) do
+      {:ok, ^hash} ->
+        {:ok, {:jail_setup_already_current, jail}}
+
+      _ ->
+        case run_setup_ops(jail, ops) do
+          :ok ->
+            with :ok <- File.mkdir_p(Path.dirname(hash_path)),
+                 :ok <- File.write(hash_path, hash) do
+              {:ok, {:jail_setup_ran, jail, length(ops)}}
+            else
+              {:error, reason} ->
+                {:error, {:jail_setup_hash_write_failed, jail, reason}}
+            end
+
+          {:error, reason} ->
+            {:error, {:jail_setup_failed, jail, reason}}
+        end
+    end
+  end
+
   # Write a file into the jail's rootfs from the host side. Bastille's
   # rootfs lives at <jails_dir>/<name>/root, so the jail-visible path
   # <p> maps to <jails_dir>/<name>/root<p> on the host. Idempotent:
@@ -411,6 +441,83 @@ defmodule Zed.Converge.Executor do
 
   defp maybe_chmod(_path, nil), do: :ok
   defp maybe_chmod(path, mode) when is_integer(mode), do: File.chmod(path, mode)
+
+  # SHA-256 over the deterministic term encoding of the ops list —
+  # any change (order, args, options) invalidates the hash and
+  # triggers a re-run.
+  defp setup_ops_hash(ops) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(ops))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp run_setup_ops(_jail, []), do: :ok
+
+  defp run_setup_ops(jail, [op | rest]) do
+    case run_setup_op(jail, op) do
+      :ok -> run_setup_ops(jail, rest)
+      {:error, reason} -> {:error, {:op_failed, op, reason}}
+    end
+  end
+
+  # cmd runs inside the jail via `sh -c` so shell syntax (pipes,
+  # redirects, quoting) works exactly as the operator wrote it.
+  defp run_setup_op(jail, {:cmd, cmd_str}) when is_binary(cmd_str) do
+    case Bastille.cmd(jail, ["sh", "-c", cmd_str]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # file ops write from the host side into <jails_dir>/<jail>/root<path>
+  # — same pattern as :jail_file, no shell escaping inside the jail.
+  defp run_setup_op(jail, {:file, path, opts}) do
+    host_path = "#{Bastille.jails_dir()}/#{jail}/root#{path}"
+
+    cond do
+      opts[:content] != nil ->
+        with :ok <- File.mkdir_p(Path.dirname(host_path)),
+             :ok <- File.write(host_path, opts[:content]) do
+          :ok
+        end
+
+      opts[:append] != nil ->
+        append_line_if_absent(host_path, opts[:append])
+
+      true ->
+        {:error, {:setup_file_op_missing_action, path}}
+    end
+  end
+
+  defp run_setup_op(_jail, other), do: {:error, {:unknown_setup_op, other}}
+
+  defp append_line_if_absent(host_path, line) do
+    current =
+      case File.read(host_path) do
+        {:ok, c} -> c
+        _ -> ""
+      end
+
+    already_present =
+      current
+      |> String.split("\n")
+      |> Enum.any?(&(&1 == line))
+
+    if already_present do
+      :ok
+    else
+      new_contents =
+        cond do
+          current == "" -> line <> "\n"
+          String.ends_with?(current, "\n") -> current <> line <> "\n"
+          true -> current <> "\n" <> line <> "\n"
+        end
+
+      with :ok <- File.mkdir_p(Path.dirname(host_path)),
+           :ok <- File.write(host_path, new_contents) do
+        :ok
+      end
+    end
+  end
 
   defp enable_service(jail, service) do
     case Bastille.cmd(jail, ["sysrc", "#{service}_enable=YES"]) do

@@ -53,6 +53,13 @@ defmodule Zed.Examples.SmokePathB do
       jail_param "allow.sysvipc", true
       nullfs_mount "/tmp", into: "/host_tmp", mode: :ro
       jail_file "/etc/motd", content: "hello from zed\n", mode: 0o644
+
+      setup do
+        cmd "touch /var/log/zed-setup-ran"
+        file "/etc/rc.conf.d/zed_marker",
+          append: "zed_setup_marker=path-b-slice-6"
+      end
+
       service :cron
     end
 

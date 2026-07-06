@@ -27,6 +27,9 @@ defmodule Zed.DSL do
     * `jail_param "allow.sysvipc", true` — extra jail.conf parameter
     * `jail_file "/path", content: "...", mode: 0o644` — write file
       inside jail rootfs
+    * `setup do ... end` — imperative init that runs once (SHA-256
+      tracked); body accepts `cmd "..."` and `file "path", append: |
+      content: "..."` statements
     * `app :name do...end` — inline app (desugars into a top-level app
       with `contains` set on the jail automatically)
 
@@ -485,13 +488,19 @@ defmodule Zed.DSL do
   defp parse_jail_block({:__block__, _, statements}) do
     Enum.reduce(
       statements,
-      %{services: [], mounts: [], jail_params: [], jail_files: []},
+      %{services: [], mounts: [], jail_params: [], jail_files: [], setup: []},
       &parse_jail_statement/2
     )
   end
 
   defp parse_jail_block(single) do
-    parse_jail_statement(single, %{services: [], mounts: [], jail_params: [], jail_files: []})
+    parse_jail_statement(single, %{
+      services: [],
+      mounts: [],
+      jail_params: [],
+      jail_files: [],
+      setup: []
+    })
   end
 
   # app :name do ... end — inline app nested inside jail
@@ -525,6 +534,19 @@ defmodule Zed.DSL do
     Map.update(acc, :jail_files, [file], fn fs -> fs ++ [file] end)
   end
 
+  # setup do
+  #   cmd "sysrc postgresql_enable=YES"
+  #   file "/path", append: "line"
+  # end
+  #
+  # Platform-specific imperative init that runs once inside the jail
+  # (SHA-256 tracked). Runs after packages / mounts / files and before
+  # services start.
+  defp parse_jail_statement({:setup, _, [[do: block]]}, acc) do
+    ops = parse_setup_block(block)
+    Map.update(acc, :setup, ops, fn existing -> existing ++ ops end)
+  end
+
   # dataset "data/pg", mount_in_jail: "/var/db/postgres" — two-arg form
   defp parse_jail_statement({:dataset, _, [path | opts]}, acc) when opts != [] do
     ds = {path, opts_to_map(opts)}
@@ -540,6 +562,19 @@ defmodule Zed.DSL do
   defp opts_to_map([opts]) when is_list(opts), do: Map.new(opts, &normalize_opt/1)
   defp opts_to_map(opts) when is_list(opts), do: Map.new(opts, &normalize_opt/1)
   defp opts_to_map(_), do: %{}
+
+  # Parse the body of `setup do ... end`. Recognized:
+  #   cmd "shell string"      -> {:cmd, str}
+  #   file "path", opts       -> {:file, path, opts_map}
+  defp parse_setup_block({:__block__, _, statements}),
+    do: Enum.map(statements, &parse_setup_statement/1)
+
+  defp parse_setup_block(single), do: [parse_setup_statement(single)]
+
+  defp parse_setup_statement({:cmd, _, [str]}), do: {:cmd, str}
+
+  defp parse_setup_statement({:file, _, [path | opts]}),
+    do: {:file, path, opts_to_map(opts)}
 
   defp normalize_opt({k, v}), do: {k, normalize_value(v)}
 

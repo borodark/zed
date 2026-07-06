@@ -364,6 +364,40 @@ defmodule Zed.DSLTest do
              ] = jail.config.jail_files
     end
 
+    test "jail with setup do block" do
+      defmodule SetupDeploy do
+        use Zed.DSL
+
+        deploy :setup_test, pool: "tank" do
+          dataset "jails/pg" do
+            compression :lz4
+          end
+
+          jail :pg do
+            dataset "jails/pg"
+            ip4 "10.17.89.30/24"
+
+            setup do
+              cmd "sysrc postgresql_enable=YES"
+              cmd "service postgresql initdb"
+              file "/var/db/postgres/16/data/pg_hba.conf",
+                append: "host all all 10.17.89.0/24 scram-sha-256"
+            end
+          end
+        end
+      end
+
+      ir = SetupDeploy.__zed_ir__()
+      [jail] = ir.jails
+
+      assert [
+               {:cmd, "sysrc postgresql_enable=YES"},
+               {:cmd, "service postgresql initdb"},
+               {:file, "/var/db/postgres/16/data/pg_hba.conf",
+                %{append: "host all all 10.17.89.0/24 scram-sha-256"}}
+             ] = jail.config.setup
+    end
+
     test "jail with inline app desugars into top-level app + contains" do
       defmodule InlineAppJailDeploy do
         use Zed.DSL

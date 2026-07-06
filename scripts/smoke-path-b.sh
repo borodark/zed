@@ -78,6 +78,30 @@ verify() {
         rc=1
     fi
 
+    # setup do — cmd created marker file inside jail
+    if [ -e /usr/local/bastille/jails/smoke_up/root/var/log/zed-setup-ran ]; then
+        log "  [OK] smoke_up setup:cmd ran (marker file present)"
+    else
+        log "  [FAIL] smoke_up setup:cmd marker missing"
+        rc=1
+    fi
+
+    # setup do — file append landed
+    if doas grep -q "zed_setup_marker=path-b-slice-6" /usr/local/bastille/jails/smoke_up/root/etc/rc.conf.d/zed_marker 2>/dev/null; then
+        log "  [OK] smoke_up setup:file append landed"
+    else
+        log "  [FAIL] smoke_up setup:file append missing"
+        rc=1
+    fi
+
+    # setup hash persisted
+    if [ -e /usr/local/bastille/jails/smoke_up/zed-setup.hash ]; then
+        log "  [OK] smoke_up zed-setup.hash written"
+    else
+        log "  [FAIL] smoke_up zed-setup.hash missing"
+        rc=1
+    fi
+
     # jail_pkg — curl should be installed inside smoke_up
     if doas bastille cmd smoke_up which curl >/dev/null 2>&1; then
         log "  [OK] curl installed inside smoke_up"

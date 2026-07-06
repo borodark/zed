@@ -280,6 +280,149 @@ defmodule Zed.Converge.ExecutorTest do
     end
   end
 
+  describe ":jail_setup :run" do
+    setup do
+      tmp = System.tmp_dir!() |> Path.join("zed-jail-setup-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      Application.put_env(:zed, Zed.Platform.Bastille,
+        runner: Mock,
+        jails_dir: tmp
+      )
+
+      on_exit(fn ->
+        File.rm_rf!(tmp)
+        Application.delete_env(:zed, Zed.Platform.Bastille)
+      end)
+
+      {:ok, jails_dir: tmp}
+    end
+
+    test "runs cmd + file append and writes hash", %{jails_dir: dir} do
+      Mock.expect(:cmd, {"", 0})
+
+      step = %Step{
+        id: "jail:setup:pg",
+        type: :jail_setup,
+        action: :run,
+        args: %{
+          jail: :pg,
+          ops: [
+            {:cmd, "sysrc postgresql_enable=YES"},
+            {:file, "/etc/pg_hba.conf", %{append: "host all all 10.17.89.0/24 scram-sha-256"}}
+          ]
+        }
+      }
+
+      assert {:ok, [{"jail:setup:pg", {:jail_setup_ran, "pg", 2}}]} = run_step(step)
+
+      # Hash file was written
+      hash_path = Path.join([dir, "pg", "zed-setup.hash"])
+      assert File.exists?(hash_path)
+
+      # File append landed in the jail rootfs
+      hba = Path.join([dir, "pg", "root", "etc", "pg_hba.conf"])
+      assert File.read!(hba) == "host all all 10.17.89.0/24 scram-sha-256\n"
+
+      # cmd shelled out as sh -c
+      assert Enum.any?(Mock.calls(), fn
+               {:cmd, ["pg", "sh", "-c", "sysrc postgresql_enable=YES"], _} -> true
+               _ -> false
+             end)
+    end
+
+    test "second run with same ops short-circuits via hash match", %{jails_dir: dir} do
+      Mock.expect(:cmd, {"", 0})
+
+      ops = [{:cmd, "true"}]
+
+      step = %Step{
+        id: "jail:setup:pg",
+        type: :jail_setup,
+        action: :run,
+        args: %{jail: :pg, ops: ops}
+      }
+
+      # First run — populates hash file
+      assert {:ok, [{"jail:setup:pg", {:jail_setup_ran, "pg", 1}}]} = run_step(step)
+      call_count_after_first = length(Mock.calls())
+
+      # Second run — should read hash, match, skip
+      assert {:ok, [{"jail:setup:pg", {:jail_setup_already_current, "pg"}}]} = run_step(step)
+      assert length(Mock.calls()) == call_count_after_first, "no new cmd calls on skip"
+
+      # Hash file still there
+      assert File.exists?(Path.join([dir, "pg", "zed-setup.hash"]))
+    end
+
+    test "file append is idempotent — no duplicate line if already present", %{jails_dir: dir} do
+      # Seed the file with the line already in place
+      hba = Path.join([dir, "pg", "root", "etc", "pg_hba.conf"])
+      File.mkdir_p!(Path.dirname(hba))
+      File.write!(hba, "host all all 10.17.89.0/24 scram-sha-256\n")
+
+      step = %Step{
+        id: "jail:setup:pg",
+        type: :jail_setup,
+        action: :run,
+        args: %{
+          jail: :pg,
+          ops: [
+            {:file, "/etc/pg_hba.conf",
+             %{append: "host all all 10.17.89.0/24 scram-sha-256"}}
+          ]
+        }
+      }
+
+      assert {:ok, _} = run_step(step)
+
+      # Still one line, not two
+      lines = File.read!(hba) |> String.split("\n", trim: true)
+      assert lines == ["host all all 10.17.89.0/24 scram-sha-256"]
+    end
+
+    test "changing ops invalidates hash, forces re-run", %{jails_dir: dir} do
+      Mock.expect(:cmd, {"", 0})
+
+      step_v1 = %Step{
+        id: "jail:setup:pg",
+        type: :jail_setup,
+        action: :run,
+        args: %{jail: :pg, ops: [{:cmd, "true"}]}
+      }
+
+      assert {:ok, [{"jail:setup:pg", {:jail_setup_ran, "pg", 1}}]} = run_step(step_v1)
+
+      step_v2 = %Step{
+        id: "jail:setup:pg",
+        type: :jail_setup,
+        action: :run,
+        args: %{jail: :pg, ops: [{:cmd, "true"}, {:cmd, "echo v2"}]}
+      }
+
+      # Different ops — hash mismatch → re-runs
+      assert {:ok, [{"jail:setup:pg", {:jail_setup_ran, "pg", 2}}]} = run_step(step_v2)
+
+      # Hash file exists and reflects v2 (not equal to v1 hash)
+      hash_path = Path.join([dir, "pg", "zed-setup.hash"])
+      assert File.exists?(hash_path)
+    end
+
+    test "cmd failure aborts setup", %{jails_dir: _dir} do
+      Mock.expect(:cmd, {"nope\n", 1})
+
+      step = %Step{
+        id: "jail:setup:pg",
+        type: :jail_setup,
+        action: :run,
+        args: %{jail: :pg, ops: [{:cmd, "false"}]}
+      }
+
+      assert {:error, _step, {:jail_setup_failed, "pg", {:op_failed, {:cmd, "false"}, _}}, _} =
+               run_step(step)
+    end
+  end
+
   describe ":jail_svc :start" do
     test "sysrc-enables then starts service when not running" do
       # cmd 1: sysrc <svc>_enable=YES → ok
