@@ -105,6 +105,7 @@ defmodule Zed.Converge.Plan do
     ]
     |> Kernel.++(build_jail_pkg_steps(jail_id, config))
     |> Kernel.++(build_jail_mount_steps(jail_id, config))
+    |> Kernel.++(build_jail_data_mount_steps(jail_id, config, pool))
     |> Kernel.++(build_jail_file_steps(jail_id, config))
     |> Kernel.++(build_jail_setup_steps(jail_id, config))
     |> Kernel.++(build_jail_svc_steps(jail_id, config))
@@ -318,6 +319,45 @@ defmodule Zed.Converge.Plan do
   end
 
   defp build_jail_mount_steps(_jail_id, _config), do: []
+
+  # Two-arg dataset form inside a jail block:
+  #   dataset "data/pg", mount_in_jail: "/var/db/postgres"
+  # → jail.config[:datasets] = [{path, %{mount_in_jail: "/..."}}]
+  #
+  # The data dataset lives at /<pool>/<path> on the host; nullfs-mount
+  # it rw into the jail at the requested target so the service picks
+  # up persistent state on restart.
+  defp build_jail_data_mount_steps(jail_id, %{datasets: datasets}, pool)
+       when is_list(datasets) and datasets != [] do
+    datasets
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{path, opts}, idx} ->
+      case opts[:mount_in_jail] do
+        nil ->
+          []
+
+        jail_path ->
+          host_path = "/#{pool}/#{path}"
+
+          [
+            %Step{
+              id: "jail:datamount:#{jail_id}:#{idx}",
+              type: :jail_mount,
+              action: :create,
+              args: %{
+                jail: jail_id,
+                host_path: host_path,
+                jail_path: jail_path,
+                mode: :rw
+              },
+              deps: ["jail:create:#{jail_id}", "dataset:create:#{path}"]
+            }
+          ]
+      end
+    end)
+  end
+
+  defp build_jail_data_mount_steps(_jail_id, _config, _pool), do: []
 
   defp build_jail_file_steps(jail_id, %{jail_files: files})
        when is_list(files) and files != [] do

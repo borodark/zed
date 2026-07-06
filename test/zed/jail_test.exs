@@ -192,6 +192,39 @@ defmodule Zed.JailTest do
       assert pg_idx < app_idx, "pg :create must come before app_jail :create"
     end
 
+    test "mount_in_jail (two-arg dataset form) emits a data-mount step" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :pg,
+            type: :jail,
+            config: %{
+              dataset: "jails/pg",
+              datasets: [{"data/pg", %{mount_in_jail: "/var/db/postgres"}}]
+            }
+          },
+          action: :create,
+          current: %{jail: nil},
+          desired: %{},
+          changes: []
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "mac_zroot")
+
+      data_mount =
+        Enum.find(plan.steps, fn s ->
+          s.type == :jail_mount and String.starts_with?(s.id, "jail:datamount:")
+        end)
+
+      assert data_mount, "expected a jail:datamount step for mount_in_jail"
+      assert data_mount.args.host_path == "/mac_zroot/data/pg"
+      assert data_mount.args.jail_path == "/var/db/postgres"
+      assert data_mount.args.mode == :rw
+      assert "dataset:create:data/pg" in data_mount.deps
+      assert "jail:create:pg" in data_mount.deps
+    end
+
     test "jail steps depend on dataset" do
       diff = [
         %Diff{
