@@ -27,4 +27,6 @@ demo-releases/*
 
 # TLA+ TLC model-checker artifacts — timestamped state dumps live
 # under states/<YY-MM-DD-HH-MM-SS.MS>/ and can grow into gigabytes.
+# Match both top-level and nested (e.g. specs/states/).
 /states/
+**/states/
