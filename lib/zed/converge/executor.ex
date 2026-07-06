@@ -160,8 +160,8 @@ defmodule Zed.Converge.Executor do
     service = to_string(args.service)
 
     with :ok <- enable_service(jail, service),
-         :ok <- start_service_if_needed(jail, service) do
-      {:ok, {:jail_svc_started, jail, service}}
+         {:ok, outcome} <- start_service_if_needed(jail, service) do
+      {:ok, {outcome, jail, service}}
     end
   end
 
@@ -365,22 +365,16 @@ defmodule Zed.Converge.Executor do
     end
   end
 
-  # Look for jail_path as the mountpoint (second field of "on <path>")
-  # inside the jail's own `mount` table.
+  # Bastille nullfs-mounts the host path onto
+  # <jails_dir>/<jail>/root<jail_path> from the host's mount namespace.
+  # The jail's own mount(8) doesn't see this (mount output inside the
+  # jail is filtered), so probe from the host side instead.
   defp jail_mount_present?(jail, jail_path) do
-    case Bastille.cmd(jail, ["mount"]) do
-      {:ok, output} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.any?(fn line ->
-          case Regex.run(~r/\s+on\s+(\S+)/, line) do
-            [_, ^jail_path] -> true
-            _ -> false
-          end
-        end)
+    host_mountpoint = "#{Bastille.jails_dir()}/#{jail}/root#{jail_path}"
 
-      {:error, _} ->
-        false
+    case System.cmd("mount", [], stderr_to_stdout: true) do
+      {output, 0} -> String.contains?(output, " on " <> host_mountpoint <> " (")
+      _ -> false
     end
   end
 
@@ -399,11 +393,11 @@ defmodule Zed.Converge.Executor do
   defp start_service_if_needed(jail, service) do
     case Bastille.cmd(jail, ["service", service, "status"]) do
       {:ok, _} ->
-        :ok
+        {:ok, :jail_svc_already_running}
 
       {:error, _} ->
         case Bastille.cmd(jail, ["service", service, "start"]) do
-          {:ok, _} -> :ok
+          {:ok, _} -> {:ok, :jail_svc_started}
           {:error, reason} -> {:error, {:jail_svc_start_failed, jail, service, reason}}
         end
     end

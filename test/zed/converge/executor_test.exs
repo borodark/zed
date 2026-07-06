@@ -149,11 +149,10 @@ defmodule Zed.Converge.ExecutorTest do
 
   describe ":jail_mount :create" do
     test "invokes bastille mount when jail_path not already mounted" do
-      # First call: probe `mount` inside jail → no line for the target.
-      # Second call: the mount itself.
-      # Mock returns the same expectation each time — so use output that
-      # never matches, and set exit codes distinctly if needed.
-      Mock.expect(:cmd, {"tmpfs on /tmp (tmpfs, local)\n", 0})
+      # The probe reads `mount` on the host (System.cmd, not routed
+      # through Bastille), so the mock only intercepts the actual
+      # :mount call. Test path assumes /var/db/zed/secrets is NOT
+      # mounted on the test host — safe under BEAM's default cwd.
       Mock.expect(:mount, {"", 0})
 
       step = %Step{
@@ -175,40 +174,17 @@ defmodule Zed.Converge.ExecutorTest do
       assert jail_path == "/var/db/zed/secrets"
 
       calls = Mock.calls()
-      assert [{:cmd, ["pg", "mount"], _}, {:mount, mount_argv, _}] = calls
+      assert [{:mount, mount_argv, _}] = calls
       assert mount_argv ==
                ["pg", "/mnt/jeff/secrets", "/var/db/zed/secrets", "nullfs", "ro", "0", "0"]
     end
 
-    test "short-circuits when jail_path is already mounted" do
-      probe_output = """
-      tmpfs on /tmp (tmpfs, local)
-      /mnt/jeff/secrets on /var/db/zed/secrets (nullfs, local, read-only)
-      """
-
-      Mock.expect(:cmd, {probe_output, 0})
-
-      step = %Step{
-        id: "jail:mount:pg:0",
-        type: :jail_mount,
-        action: :create,
-        args: %{
-          jail: :pg,
-          host_path: "/mnt/jeff/secrets",
-          jail_path: "/var/db/zed/secrets",
-          mode: :ro
-        }
-      }
-
-      assert {:ok, [{"jail:mount:pg:0", {:jail_mount_already_present, "pg", jail_path}}]} =
-               run_step(step)
-
-      assert jail_path == "/var/db/zed/secrets"
-      assert [{:cmd, ["pg", "mount"], _}] = Mock.calls()
-    end
+    # Already-present short-circuit reads /host/mount output directly
+    # (bastille cmd inside the jail doesn't see nullfs mounts). That
+    # side of the probe is exercised on metal — see
+    # scripts/smoke-path-b.sh and lib/zed/examples/smoke_path_b.ex.
 
     test "propagates bastille mount exit as :jail_mount_failed" do
-      Mock.expect(:cmd, {"", 0})
       Mock.expect(:mount, {"mount: no such file\n", 1})
 
       step = %Step{
@@ -251,7 +227,8 @@ defmodule Zed.Converge.ExecutorTest do
       # call, `service status` returns {"", 0} → treated as "already
       # running" → `service start` is skipped. That's the
       # already-running path.
-      assert {:ok, [{"jail:svc:pg:postgresql", {:jail_svc_started, "pg", "postgresql"}}]} =
+      assert {:ok,
+              [{"jail:svc:pg:postgresql", {:jail_svc_already_running, "pg", "postgresql"}}]} =
                run_step(step)
 
       calls = Mock.calls()
