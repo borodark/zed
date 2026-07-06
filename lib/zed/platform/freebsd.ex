@@ -8,8 +8,6 @@ defmodule Zed.Platform.FreeBSD do
 
   @behaviour Zed.Platform
 
-  @jail_conf_dir "/etc/jail.conf.d"
-
   alias Zed.Platform.Bastille
 
   @impl true
@@ -178,8 +176,6 @@ defmodule Zed.Platform.FreeBSD do
         []
     end
   end
-
-  defp jail_conf_path(name), do: Path.join(@jail_conf_dir, "#{name}.conf")
 
   # Create the jail via bastille if it doesn't exist. Bastille itself
   # handles the rootfs + jail.conf + registration. IP is required.

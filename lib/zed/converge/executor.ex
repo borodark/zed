@@ -339,8 +339,6 @@ defmodule Zed.Converge.Executor do
     end
   end
 
-  defp stamp_jail_properties(%{dataset: nil}), do: :ok
-
   # alive_check helpers for :service_run.  Currently only :epmd
   # (look up a registered short-name node).
   defp service_run_alive?(nil), do: false
@@ -433,6 +431,8 @@ defmodule Zed.Converge.Executor do
         end
     end
   end
+
+  defp stamp_jail_properties(%{dataset: nil}), do: :ok
 
   defp stamp_jail_properties(%{jail: jail_name, dataset: ds} = args) do
     # Dataset should already have pool prefix from plan
