@@ -152,6 +152,34 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  # Write a file into the jail's rootfs from the host side. Bastille's
+  # rootfs lives at <jails_dir>/<name>/root, so the jail-visible path
+  # <p> maps to <jails_dir>/<name>/root<p> on the host. Idempotent:
+  # skip the write if on-disk content already matches. Applies mode if
+  # provided.
+  defp execute_step(%Step{type: :jail_file, action: :create, args: args}, _platform) do
+    jail = to_string(args.jail)
+    jail_path = to_string(args.path)
+    content = args.content || ""
+    mode = args[:mode]
+
+    host_path = "#{Bastille.jails_dir()}/#{jail}/root#{jail_path}"
+
+    case File.read(host_path) do
+      {:ok, ^content} ->
+        {:ok, {:jail_file_already_current, jail, jail_path}}
+
+      _ ->
+        with :ok <- File.mkdir_p(Path.dirname(host_path)),
+             :ok <- File.write(host_path, content),
+             :ok <- maybe_chmod(host_path, mode) do
+          {:ok, {:jail_file_created, jail, jail_path}}
+        else
+          {:error, reason} -> {:error, {:jail_file_failed, jail, jail_path, reason}}
+        end
+    end
+  end
+
   # sysrc <svc>_enable=YES, then service <svc> start. Both run inside
   # the jail via `bastille cmd`. sysrc is idempotent. Service start is
   # gated on a status probe so re-converge is a no-op.
@@ -382,6 +410,9 @@ defmodule Zed.Converge.Executor do
   defp mode_to_string(:ro), do: "ro"
   defp mode_to_string(:rw), do: "rw"
   defp mode_to_string(bin) when is_binary(bin), do: bin
+
+  defp maybe_chmod(_path, nil), do: :ok
+  defp maybe_chmod(path, mode) when is_integer(mode), do: File.chmod(path, mode)
 
   defp enable_service(jail, service) do
     case Bastille.cmd(jail, ["sysrc", "#{service}_enable=YES"]) do

@@ -3,7 +3,7 @@ defmodule Zed.Converge.Step do
   A single convergence step — one atomic operation in the execution plan.
 
   Types: `:dataset`, `:app`, `:service`, `:snapshot`, `:jail`,
-  `:jail_pkg`, `:jail_mount`, `:jail_svc`, `:tarfs`, `:file`,
+  `:jail_pkg`, `:jail_mount`, `:jail_svc`, `:jail_file`, `:tarfs`, `:file`,
   `:service_run`.
   """
 
@@ -20,6 +20,7 @@ defmodule Zed.Converge.Step do
             | :jail_pkg
             | :jail_mount
             | :jail_svc
+            | :jail_file
             | :tarfs
             | :file
             | :service_run,

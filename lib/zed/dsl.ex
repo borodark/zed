@@ -25,6 +25,8 @@ defmodule Zed.DSL do
     * `dataset "path", mount_in_jail: "/mount"` — data volume mount
     * `depends_on :other_jail` — jail boot ordering
     * `jail_param "allow.sysvipc", true` — extra jail.conf parameter
+    * `jail_file "/path", content: "...", mode: 0o644` — write file
+      inside jail rootfs
     * `app :name do...end` — inline app (desugars into a top-level app
       with `contains` set on the jail automatically)
 
@@ -477,11 +479,15 @@ defmodule Zed.DSL do
   # Parse jail block — handles nested app, service, nullfs_mount, and
   # two-arg dataset forms. Simple key-value falls through to parse_kv_statement.
   defp parse_jail_block({:__block__, _, statements}) do
-    Enum.reduce(statements, %{services: [], mounts: [], jail_params: []}, &parse_jail_statement/2)
+    Enum.reduce(
+      statements,
+      %{services: [], mounts: [], jail_params: [], jail_files: []},
+      &parse_jail_statement/2
+    )
   end
 
   defp parse_jail_block(single) do
-    parse_jail_statement(single, %{services: [], mounts: [], jail_params: []})
+    parse_jail_statement(single, %{services: [], mounts: [], jail_params: [], jail_files: []})
   end
 
   # app :name do ... end — inline app nested inside jail
@@ -506,6 +512,13 @@ defmodule Zed.DSL do
   defp parse_jail_statement({:jail_param, _, [key, value]}, acc) do
     param = {key, value}
     Map.update(acc, :jail_params, [param], fn ps -> ps ++ [param] end)
+  end
+
+  # jail_file "/etc/motd", content: "...", mode: 0o644 — write a file
+  # inside the jail's rootfs.
+  defp parse_jail_statement({:jail_file, _, [path | opts]}, acc) do
+    file = {path, opts_to_map(opts)}
+    Map.update(acc, :jail_files, [file], fn fs -> fs ++ [file] end)
   end
 
   # dataset "data/pg", mount_in_jail: "/var/db/postgres" — two-arg form

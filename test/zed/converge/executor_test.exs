@@ -205,6 +205,81 @@ defmodule Zed.Converge.ExecutorTest do
     end
   end
 
+  describe ":jail_file :create" do
+    setup do
+      tmp = System.tmp_dir!() |> Path.join("zed-jail-file-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      # Override jails_dir so the executor writes into our tempdir.
+      Application.put_env(:zed, Zed.Platform.Bastille,
+        runner: Mock,
+        jails_dir: tmp
+      )
+
+      on_exit(fn ->
+        File.rm_rf!(tmp)
+        Application.delete_env(:zed, Zed.Platform.Bastille)
+      end)
+
+      {:ok, jails_dir: tmp}
+    end
+
+    test "writes file at <jails_dir>/<jail>/root<path>", %{jails_dir: dir} do
+      step = %Step{
+        id: "jail:file:app:0",
+        type: :jail_file,
+        action: :create,
+        args: %{jail: :app, path: "/etc/motd", content: "hello", mode: 0o644}
+      }
+
+      assert {:ok, [{"jail:file:app:0", {:jail_file_created, "app", "/etc/motd"}}]} =
+               run_step(step)
+
+      target = Path.join([dir, "app", "root", "etc", "motd"])
+      assert File.read!(target) == "hello"
+      stat = File.stat!(target)
+      # File.chmod semantics vary per-OS in ExUnit's tempdir; assert
+      # the file exists at the expected path and content is right,
+      # trust the chmod call happened without erroring.
+      assert stat.type == :regular
+    end
+
+    test "short-circuits when on-disk content already matches", %{jails_dir: dir} do
+      target = Path.join([dir, "app", "root", "etc", "motd"])
+      File.mkdir_p!(Path.dirname(target))
+      File.write!(target, "hello")
+
+      step = %Step{
+        id: "jail:file:app:0",
+        type: :jail_file,
+        action: :create,
+        args: %{jail: :app, path: "/etc/motd", content: "hello"}
+      }
+
+      assert {:ok,
+              [{"jail:file:app:0", {:jail_file_already_current, "app", "/etc/motd"}}]} =
+               run_step(step)
+    end
+
+    test "rewrites when content differs", %{jails_dir: dir} do
+      target = Path.join([dir, "app", "root", "etc", "motd"])
+      File.mkdir_p!(Path.dirname(target))
+      File.write!(target, "old")
+
+      step = %Step{
+        id: "jail:file:app:0",
+        type: :jail_file,
+        action: :create,
+        args: %{jail: :app, path: "/etc/motd", content: "new"}
+      }
+
+      assert {:ok, [{"jail:file:app:0", {:jail_file_created, "app", "/etc/motd"}}]} =
+               run_step(step)
+
+      assert File.read!(target) == "new"
+    end
+  end
+
   describe ":jail_svc :start" do
     test "sysrc-enables then starts service when not running" do
       # cmd 1: sysrc <svc>_enable=YES → ok

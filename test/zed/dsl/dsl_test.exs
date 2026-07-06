@@ -336,6 +336,34 @@ defmodule Zed.DSLTest do
       assert jail.config.jail_params == [{"allow.sysvipc", true}, {"children.max", 4}]
     end
 
+    test "jail with jail_file entries" do
+      defmodule JailFileDeploy do
+        use Zed.DSL
+
+        deploy :jf, pool: "tank" do
+          dataset "jails/app" do
+            compression :lz4
+          end
+
+          jail :app do
+            dataset "jails/app"
+            ip4 "10.17.89.30/24"
+
+            jail_file "/etc/motd", content: "hello from zed"
+            jail_file "/var/db/zed/cookie", content: "SECRET", mode: 0o600
+          end
+        end
+      end
+
+      ir = JailFileDeploy.__zed_ir__()
+      [jail] = ir.jails
+
+      assert [
+               {"/etc/motd", %{content: "hello from zed"}},
+               {"/var/db/zed/cookie", %{content: "SECRET", mode: 0o600}}
+             ] = jail.config.jail_files
+    end
+
     test "jail with inline app desugars into top-level app + contains" do
       defmodule InlineAppJailDeploy do
         use Zed.DSL

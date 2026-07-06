@@ -62,11 +62,19 @@ verify() {
         fi
     done
 
-    # jail_param — allow.sysvipc should be in the jail.conf.d file
-    if grep -q "allow.sysvipc" /etc/jail.conf.d/smoke_up.conf 2>/dev/null; then
+    # jail_param — allow.sysvipc should be in bastille's jail.conf
+    if doas grep -q "allow.sysvipc" /usr/local/bastille/jails/smoke_up/jail.conf 2>/dev/null; then
         log "  [OK] smoke_up jail.conf has allow.sysvipc"
     else
         log "  [FAIL] smoke_up jail.conf missing allow.sysvipc"
+        rc=1
+    fi
+
+    # jail_file — /etc/motd inside the jail
+    if doas grep -q "hello from zed" /usr/local/bastille/jails/smoke_up/root/etc/motd 2>/dev/null; then
+        log "  [OK] smoke_up /etc/motd written by jail_file"
+    else
+        log "  [FAIL] smoke_up /etc/motd missing or wrong content"
         rc=1
     fi
 

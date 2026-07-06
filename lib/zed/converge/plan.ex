@@ -105,6 +105,7 @@ defmodule Zed.Converge.Plan do
     ]
     |> Kernel.++(build_jail_pkg_steps(jail_id, config))
     |> Kernel.++(build_jail_mount_steps(jail_id, config))
+    |> Kernel.++(build_jail_file_steps(jail_id, config))
     |> Kernel.++(build_jail_svc_steps(jail_id, config))
   end
 
@@ -317,6 +318,28 @@ defmodule Zed.Converge.Plan do
 
   defp build_jail_mount_steps(_jail_id, _config), do: []
 
+  defp build_jail_file_steps(jail_id, %{jail_files: files})
+       when is_list(files) and files != [] do
+    files
+    |> Enum.with_index()
+    |> Enum.map(fn {{path, opts}, idx} ->
+      %Step{
+        id: "jail:file:#{jail_id}:#{idx}",
+        type: :jail_file,
+        action: :create,
+        args: %{
+          jail: jail_id,
+          path: path,
+          content: opts[:content] || "",
+          mode: opts[:mode]
+        },
+        deps: ["jail:create:#{jail_id}"]
+      }
+    end)
+  end
+
+  defp build_jail_file_steps(_jail_id, _config), do: []
+
   defp build_jail_svc_steps(jail_id, %{services: svcs}) when is_list(svcs) and svcs != [] do
     # Services depend on packages (if any) being installed first
     pkg_dep =
@@ -372,6 +395,7 @@ defmodule Zed.Converge.Plan do
         jail: 3,
         jail_pkg: 4,
         jail_mount: 5,
+        jail_file: 6,
         app: 6,
         file: 6,
         jail_svc: 7,

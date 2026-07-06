@@ -52,6 +52,7 @@ defmodule Zed.Examples.SmokePathB do
       packages ["curl"]
       jail_param "allow.sysvipc", true
       nullfs_mount "/tmp", into: "/host_tmp", mode: :ro
+      jail_file "/etc/motd", content: "hello from zed\n", mode: 0o644
       service :cron
     end
 
