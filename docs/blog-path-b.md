@@ -35,12 +35,12 @@ proves it.
 
 | Slice | Commit | What it does |
 |---|---|---|
-| 1 | `36ca282` | Replace three executor stubs with real `Bastille.cmd` calls |
-| 2 | `03a6015` | `jail_param` DSL verb → jail.conf.d passthrough |
-| 3 | `161d4ae` | `depends_on` honored via topological-depth Plan sort |
-| 4 | `bcd4844` | Native `jail(8)` → Bastille jail lifecycle |
-| 5 | `1f3d1eb` | `jail_file` DSL verb — write files inside a jail's rootfs |
-| 6 | `27fcf67` | `setup do` block with SHA-256 content-hash idempotency |
+| 1 | `7a58d80` | Replace three executor stubs with real `Bastille.cmd` calls |
+| 2 | `f20a0d4` | `jail_param` DSL verb → jail.conf.d passthrough |
+| 3 | `4401725` | `depends_on` honored via topological-depth Plan sort |
+| 4 | `bf4b653` | Native `jail(8)` → Bastille jail lifecycle |
+| 5 | `bfd9b02` | `jail_file` DSL verb — write files inside a jail's rootfs |
+| 6 | `dc50bbc` | `setup do` block with SHA-256 content-hash idempotency |
 
 Plus three follow-on commits found on the metal: `Bastille.mount`
 argv needed six columns (fstab format), the mount presence probe
@@ -241,17 +241,17 @@ worth reading. This one was the yak-shave that unlocks it.
 ```
 Path B ledger (chronological, git log --oneline):
 
-  27fcf67 setup do block + SHA-256 content-hash idempotency
-  3d57b2e resolve remaining compile warnings
-  3ccbafd clean up warnings from Path B slice 4
-  1f3d1eb jail_file DSL verb + executor writes into bastille jail rootfs
-  7bcd31f probe host mount table; distinguish svc already-running tuple
-  fd00662 Bastille.mount passes six-column fstab argv
-  bcd4844 route Platform.FreeBSD jail lifecycle through Bastille
-  96d5593 SmokePathB example + smoke-path-b.sh for mac-248 verification
-  161d4ae honor jail depends_on in plan step ordering
-  03a6015 jail_param DSL verb + jail.conf.d passthrough
-  36ca282 wire jail_pkg/jail_mount/jail_svc executor stubs via Bastille
+  dc50bbc setup do block + SHA-256 content-hash idempotency
+  0bfd235 resolve remaining compile warnings
+  4fd6c00 clean up warnings from Path B slice 4
+  bfd9b02 jail_file DSL verb + executor writes into bastille jail rootfs
+  8d04c74 probe host mount table; distinguish svc already-running tuple
+  4f7441f Bastille.mount passes six-column fstab argv
+  bf4b653 route Platform.FreeBSD jail lifecycle through Bastille
+  5e10163 SmokePathB example + smoke-path-b.sh for mac-248 verification
+  4401725 honor jail depends_on in plan step ordering
+  f20a0d4 jail_param DSL verb + jail.conf.d passthrough
+  7a58d80 wire jail_pkg/jail_mount/jail_svc executor stubs via Bastille
 ```
 
 Suite: 299 tests, 0 failures. Live on mac-248, verified 2026-07-05.
