@@ -64,6 +64,13 @@ verify() {
 
     rc=0
 
+    # `bastille cmd <jail> foo` prints "Jail is not running" to stdout
+    # and STILL EXITS 0. Every jail-internal check would false-positive
+    # on a stopped jail. Guard by requiring `jls -j <name>` to succeed
+    # (kernel-level running check) before treating a bastille cmd's
+    # exit code as meaningful.
+    jail_running() { doas jls -j "$1" -q jid >/dev/null 2>&1; }
+
     # Each check: stdout redirected to /dev/null for cleanliness;
     # stderr LEFT ATTACHED so any doas re-prompt or unexpected error
     # is visible.
@@ -108,33 +115,43 @@ verify() {
         rc=1
     fi
 
-    # Packages inside jails
-    if doas bastille cmd pg which pg_ctl >/dev/null; then
+    # Jail runtime state (kernel-level)
+    for j in $JAILS; do
+        if jail_running "$j"; then
+            log "  [OK] jail $j is running"
+        else
+            log "  [FAIL] jail $j is NOT running"
+            rc=1
+        fi
+    done
+
+    # Packages inside jails — guarded on running
+    if jail_running pg && doas bastille cmd pg which pg_ctl >/dev/null; then
         log "  [OK] pg has postgresql16-server (pg_ctl found)"
     else
-        log "  [FAIL] pg missing postgresql16-server"
+        log "  [FAIL] pg missing postgresql16-server or jail not running"
         rc=1
     fi
 
-    if doas bastille cmd ch which clickhouse-server >/dev/null; then
+    if jail_running ch && doas bastille cmd ch which clickhouse-server >/dev/null; then
         log "  [OK] ch has clickhouse (server binary found)"
     else
-        log "  [FAIL] ch missing clickhouse"
+        log "  [FAIL] ch missing clickhouse or jail not running"
         rc=1
     fi
 
-    # Setup markers
-    if doas bastille cmd pg test -f /var/db/postgres/16/data/PG_VERSION; then
+    # Setup markers — guarded
+    if jail_running pg && doas bastille cmd pg test -f /var/db/postgres/16/data/PG_VERSION; then
         log "  [OK] pg initdb ran (PG_VERSION exists)"
     else
-        log "  [FAIL] pg initdb did not run"
+        log "  [FAIL] pg initdb did not run or jail not running"
         rc=1
     fi
 
-    if doas bastille cmd pg grep -q "10.17.89.0/24" /var/db/postgres/16/data/pg_hba.conf; then
+    if jail_running pg && doas bastille cmd pg grep -q "10.17.89.0/24" /var/db/postgres/16/data/pg_hba.conf; then
         log "  [OK] pg pg_hba.conf has bastille0 subnet"
     else
-        log "  [FAIL] pg pg_hba.conf missing bastille0 subnet"
+        log "  [FAIL] pg pg_hba.conf missing bastille0 subnet or jail not running"
         rc=1
     fi
 
@@ -149,33 +166,33 @@ verify() {
         fi
     done
 
-    # Services running — service status exit 0 = running
-    if doas bastille cmd pg service postgresql status >/dev/null; then
+    # Services running — guarded
+    if jail_running pg && doas bastille cmd pg service postgresql status >/dev/null; then
         log "  [OK] postgresql running in pg jail"
     else
-        log "  [FAIL] postgresql not running in pg jail"
+        log "  [FAIL] postgresql not running in pg jail (or jail down)"
         rc=1
     fi
 
-    if doas bastille cmd ch service clickhouse status >/dev/null; then
+    if jail_running ch && doas bastille cmd ch service clickhouse status >/dev/null; then
         log "  [OK] clickhouse running in ch jail"
     else
-        log "  [FAIL] clickhouse not running in ch jail"
+        log "  [FAIL] clickhouse not running in ch jail (or jail down)"
         rc=1
     fi
 
     # End-to-end
-    if doas bastille cmd pg su -m postgres -c "psql -c 'SELECT version()'" | grep -q PostgreSQL; then
+    if jail_running pg && doas bastille cmd pg su -m postgres -c "psql -c 'SELECT version()'" | grep -q PostgreSQL; then
         log "  [OK] pg accepts psql connections locally"
     else
-        log "  [FAIL] pg not responding to psql"
+        log "  [FAIL] pg not responding to psql (or jail down)"
         rc=1
     fi
 
-    if doas bastille cmd ch fetch -qo - "http://127.0.0.1:8123/ping" | grep -qi ok; then
+    if jail_running ch && doas bastille cmd ch fetch -qo - "http://127.0.0.1:8123/ping" | grep -qi ok; then
         log "  [OK] ch HTTP endpoint returns Ok"
     else
-        log "  [FAIL] ch HTTP endpoint not responding"
+        log "  [FAIL] ch HTTP endpoint not responding (or jail down)"
         rc=1
     fi
 
