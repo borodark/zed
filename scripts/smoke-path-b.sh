@@ -28,6 +28,9 @@ log() { printf '=== %s ===\n' "$*"; }
 clean() {
     log "clean: destroying jails + datasets (idempotent)"
 
+    log "priming doas (enter password if prompted)"
+    doas true
+
     for j in $JAILS; do
         if doas bastille list | awk 'NR>1 {print $2}' | grep -qx "$j"; then
             log "  destroying jail $j"
