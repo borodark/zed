@@ -78,7 +78,7 @@ defmodule Zed.Beam.Env do
       iex> Zed.Beam.Env.compose_env_file(:"foo@10.0.0.1", "secret")
       "export RELEASE_DISTRIBUTION=name\\nexport RELEASE_NODE=\\"foo@10.0.0.1\\"\\nexport RELEASE_COOKIE=\\"secret\\"\\n"
 
-  Three variables:
+  Three baseline variables:
     * `RELEASE_DISTRIBUTION` — required by mix release to enable
       distribution. Set to `name` when the node atom's hostname
       contains a dot (FQDN or IP), `sname` otherwise. Without this,
@@ -87,22 +87,37 @@ defmodule Zed.Beam.Env do
     * `RELEASE_NODE` — the target node atom, quoted for POSIX shell.
     * `RELEASE_COOKIE` — the resolved cookie, quoted for POSIX shell.
 
+  Optional `extra_env` map merges after the baseline — its keys must
+  be strings, values must be strings, and neither is escaped beyond
+  double-quoting. Use for application config the release reads from
+  its own environment (Path C4's PEER_NODE for the two-node cluster
+  smoke, for example).
+
   The `export` prefix is essential: without it, sourcing the file
   from the rc.d script sets the variables only in the sourcing
   shell's own environment; the child `bin/<app>` process doesn't
   inherit them and mix release falls back to auto-generating a
   short-name + random cookie.
   """
-  @spec compose_env_file(node :: atom, cookie :: binary) :: binary
-  def compose_env_file(node_name, cookie)
-      when is_atom(node_name) and is_binary(cookie) do
+  @spec compose_env_file(node :: atom, cookie :: binary, extra_env :: %{binary => binary}) ::
+          binary
+  def compose_env_file(node_name, cookie, extra_env \\ %{})
+      when is_atom(node_name) and is_binary(cookie) and is_map(extra_env) do
     distribution = distribution_mode(node_name)
 
-    """
+    baseline = """
     export RELEASE_DISTRIBUTION=#{distribution}
     export RELEASE_NODE="#{node_name}"
     export RELEASE_COOKIE="#{cookie}"
     """
+
+    extra_lines =
+      extra_env
+      |> Enum.sort_by(fn {k, _} -> k end)
+      |> Enum.map(fn {k, v} -> ~s(export #{k}="#{v}"\n) end)
+      |> Enum.join()
+
+    baseline <> extra_lines
   end
 
   # `name` when the hostname contains a dot — matches Erlang's long-

@@ -8,7 +8,7 @@ defmodule HelloBeam.Application do
     require Logger
     Logger.info("HelloBeam booting: node=#{inspect(Node.self())} cookie=#{inspect(Node.get_cookie())}")
 
-    children = [HelloBeam.Heartbeat]
+    children = [HelloBeam.Heartbeat, HelloBeam.Peer]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: HelloBeam.Supervisor)
   end

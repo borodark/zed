@@ -348,7 +348,11 @@ defmodule Zed.Converge.Plan do
         mount_in_jail: config[:mount_in_jail] || "/opt/#{app_id}",
         node_name: config[:node_name],
         cookie: config[:cookie],
-        env_file: config[:env_file] || "/var/db/zed/#{app_id}.env"
+        env_file: config[:env_file] || "/var/db/zed/#{app_id}.env",
+        # Optional per-app env vars merged after the RELEASE_* baseline.
+        # Empty map when unset (executor's write_jail_env_file handles
+        # empty extra_env cleanly via compose_env_file/3's default).
+        extra_env: config[:env] || %{}
       },
       deps: ["jail:create:#{jail_id}"]
     }

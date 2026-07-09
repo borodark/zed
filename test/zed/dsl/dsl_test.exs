@@ -336,6 +336,34 @@ defmodule Zed.DSLTest do
       assert jail.config.jail_params == [{"allow.sysvipc", true}, {"children.max", 4}]
     end
 
+    test "app with env %{} lands in config as a map" do
+      defmodule AppEnvDeploy do
+        use Zed.DSL
+
+        deploy :ae, pool: "tank" do
+          dataset "jails/app" do
+            compression :lz4
+          end
+
+          app :app do
+            dataset "jails/app"
+            version "0.1.0"
+            node_name :"app@10.0.0.10"
+            cookie {:env, "COOKIE"}
+            env %{"PEER_NODE" => "peer@10.0.0.20", "LOG_LEVEL" => "info"}
+          end
+        end
+      end
+
+      ir = AppEnvDeploy.__zed_ir__()
+      [app] = ir.apps
+
+      assert app.config.env == %{
+               "PEER_NODE" => "peer@10.0.0.20",
+               "LOG_LEVEL" => "info"
+             }
+    end
+
     test "jail_file content: @module_attribute resolves to string at exec time" do
       defmodule AttrContentDeploy do
         use Zed.DSL

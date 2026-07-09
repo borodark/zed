@@ -66,5 +66,27 @@ defmodule Zed.Beam.EnvTest do
       out = Env.compose_env_file(:"foo@bare", "abc")
       assert out =~ "export RELEASE_DISTRIBUTION=sname\n"
     end
+
+    test "appends extra env after the RELEASE_* baseline, sorted by key" do
+      out =
+        Env.compose_env_file(:"foo@10.0.0.1", "secret", %{
+          "PEER_NODE" => "bar@10.0.0.2",
+          "ENV_TAG" => "smoke"
+        })
+
+      assert out =~ ~s(export ENV_TAG="smoke"\n)
+      assert out =~ ~s(export PEER_NODE="bar@10.0.0.2"\n)
+
+      # Baseline appears BEFORE extras
+      release_pos = :binary.match(out, "RELEASE_COOKIE") |> elem(0)
+      peer_pos = :binary.match(out, "PEER_NODE") |> elem(0)
+      assert release_pos < peer_pos
+    end
+
+    test "empty extra_env yields the same output as the baseline call" do
+      baseline = Env.compose_env_file(:"foo@10.0.0.1", "secret")
+      with_empty = Env.compose_env_file(:"foo@10.0.0.1", "secret", %{})
+      assert baseline == with_empty
+    end
   end
 end
