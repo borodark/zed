@@ -13,7 +13,7 @@ defmodule HelloBeam.MixProject do
       version: "0.1.0",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
-      deps: [],
+      deps: deps(),
       releases: [
         hello_beam: [
           # include_erts so the release is self-contained inside the
@@ -29,6 +29,15 @@ defmodule HelloBeam.MixProject do
     [
       extra_applications: [:logger],
       mod: {HelloBeam.Application, []}
+    ]
+  end
+
+  defp deps do
+    [
+      # Path C5: libcluster reads the topology written by Zed's
+      # :cluster_config :create step (via Zed.Cluster.Config.write!)
+      # and manages Node.connect over Cluster.Strategy.Epmd.
+      {:libcluster, "~> 3.3"}
     ]
   end
 end
