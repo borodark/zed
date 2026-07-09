@@ -193,20 +193,31 @@ defmodule Zed.Converge.Executor do
     content = args.content || ""
     mode = args[:mode]
 
-    host_path = "#{Bastille.jails_dir()}/#{jail}/root#{jail_path}"
+    # Content MUST be a binary. Historical trap: `content: @foo` inside
+    # a DSL block used to get captured as an AST tuple and land here as
+    # non-binary — File.write then errored with :badarg, with no clue
+    # pointing at the DSL author. Reject early with a message that
+    # names the DSL source of the problem. The DSL now unquotes @attr
+    # refs so this path shouldn't trigger from correct usage; kept as
+    # defense in depth for future regressions.
+    if not is_binary(content) do
+      {:error, {:jail_file_invalid_content, jail, jail_path, content}}
+    else
+      host_path = "#{Bastille.jails_dir()}/#{jail}/root#{jail_path}"
 
-    case File.read(host_path) do
-      {:ok, ^content} ->
-        {:ok, {:jail_file_already_current, jail, jail_path}}
+      case File.read(host_path) do
+        {:ok, ^content} ->
+          {:ok, {:jail_file_already_current, jail, jail_path}}
 
-      _ ->
-        with :ok <- File.mkdir_p(Path.dirname(host_path)),
-             :ok <- File.write(host_path, content),
-             :ok <- maybe_chmod(host_path, mode) do
-          {:ok, {:jail_file_created, jail, jail_path}}
-        else
-          {:error, reason} -> {:error, {:jail_file_failed, jail, jail_path, reason}}
-        end
+        _ ->
+          with :ok <- File.mkdir_p(Path.dirname(host_path)),
+               :ok <- File.write(host_path, content),
+               :ok <- maybe_chmod(host_path, mode) do
+            {:ok, {:jail_file_created, jail, jail_path}}
+          else
+            {:error, reason} -> {:error, {:jail_file_failed, jail, jail_path, reason}}
+          end
+      end
     end
   end
 

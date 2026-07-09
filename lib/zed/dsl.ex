@@ -119,7 +119,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      config = unquote(Macro.escape(config))
+      config = unquote(Macro.escape(config, unquote: true))
 
       config =
         case @zed_current_host do
@@ -135,7 +135,7 @@ defmodule Zed.DSL do
     config = parse_app_block(block)
 
     quote do
-      config = unquote(Macro.escape(config))
+      config = unquote(Macro.escape(config, unquote: true))
 
       config =
         case @zed_current_host do
@@ -151,7 +151,7 @@ defmodule Zed.DSL do
     config = parse_jail_block(block)
 
     quote do
-      @zed_jails {unquote(name), unquote(Macro.escape(config))}
+      @zed_jails {unquote(name), unquote(Macro.escape(config, unquote: true))}
     end
   end
 
@@ -159,7 +159,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      @zed_zones {unquote(name), unquote(Macro.escape(config))}
+      @zed_zones {unquote(name), unquote(Macro.escape(config, unquote: true))}
     end
   end
 
@@ -167,7 +167,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      @zed_snapshot_config unquote(Macro.escape(config))
+      @zed_snapshot_config unquote(Macro.escape(config, unquote: true))
     end
   end
 
@@ -184,7 +184,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      config = unquote(Macro.escape(config))
+      config = unquote(Macro.escape(config, unquote: true))
 
       config =
         case @zed_current_host do
@@ -211,7 +211,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      config = unquote(Macro.escape(config))
+      config = unquote(Macro.escape(config, unquote: true))
 
       config =
         case @zed_current_host do
@@ -241,7 +241,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      config = unquote(Macro.escape(config))
+      config = unquote(Macro.escape(config, unquote: true))
 
       config =
         case @zed_current_host do
@@ -298,7 +298,7 @@ defmodule Zed.DSL do
     config = parse_kv_block(block)
 
     quote do
-      @zed_clusters {unquote(name), unquote(Macro.escape(config))}
+      @zed_clusters {unquote(name), unquote(Macro.escape(config, unquote: true))}
     end
   end
 
@@ -459,6 +459,25 @@ defmodule Zed.DSL do
 
   defp normalize_value({:%{}, _, args}) when is_list(args) do
     Map.new(args, fn {k, v} -> {normalize_value(k), normalize_value(v)} end)
+  end
+
+  # Module attribute reference: `@foo` inside a DSL block. Preserved
+  # as an unquote sentinel so `Macro.escape(config, unquote: true)`
+  # emits it as raw AST that evaluates at module execution time,
+  # when the attribute is actually set. Elixir compiles modules in
+  # two passes — macros expand before body statements run — so we
+  # cannot read the attribute value at DSL parse time.
+  defp normalize_value({:@, _, [{name, _, ctx}]} = ast)
+       when is_atom(name) and (is_atom(ctx) or is_nil(ctx)) do
+    {:unquote, [], [ast]}
+  end
+
+  # Bare local function call like `some_fn(arg1, arg2)`. Same
+  # rationale as @attr — the function only exists at execution time,
+  # so preserve the call as-is for exec-time evaluation.
+  defp normalize_value({fn_name, meta, args} = ast)
+       when is_atom(fn_name) and is_list(meta) and is_list(args) do
+    {:unquote, [], [ast]}
   end
 
   defp normalize_value(other), do: other

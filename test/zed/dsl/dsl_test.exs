@@ -336,6 +336,41 @@ defmodule Zed.DSLTest do
       assert jail.config.jail_params == [{"allow.sysvipc", true}, {"children.max", 4}]
     end
 
+    test "jail_file content: @module_attribute resolves to string at exec time" do
+      defmodule AttrContentDeploy do
+        use Zed.DSL
+
+        @cookie_value "SECRETCOOKIE123"
+        @env_body "RELEASE_NODE=foo@bar\nRELEASE_COOKIE=baz\n"
+
+        deploy :attr_test, pool: "tank" do
+          dataset "jails/app" do
+            compression :lz4
+          end
+
+          jail :app do
+            dataset "jails/app"
+            ip4 "10.0.0.10/24"
+
+            jail_file "/var/db/cookie", content: @cookie_value, mode: 0o600
+            jail_file "/var/db/env", content: @env_body
+          end
+        end
+      end
+
+      ir = AttrContentDeploy.__zed_ir__()
+      [jail] = ir.jails
+      [{cookie_path, cookie_opts}, {env_path, env_opts}] = jail.config.jail_files
+
+      assert cookie_path == "/var/db/cookie"
+      assert is_binary(cookie_opts[:content])
+      assert cookie_opts[:content] == "SECRETCOOKIE123"
+
+      assert env_path == "/var/db/env"
+      assert is_binary(env_opts[:content])
+      assert env_opts[:content] == "RELEASE_NODE=foo@bar\nRELEASE_COOKIE=baz\n"
+    end
+
     test "jail with jail_file entries" do
       defmodule JailFileDeploy do
         use Zed.DSL

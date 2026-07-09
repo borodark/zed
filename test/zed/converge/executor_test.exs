@@ -261,6 +261,22 @@ defmodule Zed.Converge.ExecutorTest do
                run_step(step)
     end
 
+    test "rejects non-binary content with :jail_file_invalid_content", %{jails_dir: _dir} do
+      # Simulate the historical trap: content is an AST tuple (as
+      # would happen if the DSL failed to resolve @attr).
+      bad_content = {:@, [], [{:some_attr, [], nil}]}
+
+      step = %Step{
+        id: "jail:file:app:0",
+        type: :jail_file,
+        action: :create,
+        args: %{jail: :app, path: "/etc/x", content: bad_content, mode: nil}
+      }
+
+      assert {:error, _step, {:jail_file_invalid_content, "app", "/etc/x", ^bad_content}, _} =
+               run_step(step)
+    end
+
     test "rewrites when content differs", %{jails_dir: dir} do
       target = Path.join([dir, "app", "root", "etc", "motd"])
       File.mkdir_p!(Path.dirname(target))

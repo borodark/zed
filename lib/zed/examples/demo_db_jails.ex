@@ -34,12 +34,23 @@ defmodule Zed.Examples.DemoDbJails do
   use Zed.DSL
 
   # ClickHouse config XML overlays live in scripts/clickhouse-config/
-  # on the host. Read at compile time so they travel with the beam
-  # release; jail_file writes them into the jail's rootfs at converge.
+  # on the host. Read into module attributes at compile time so their
+  # values inline as string literals wherever they're referenced —
+  # a defp function call inside the DSL block would be captured as
+  # AST and never evaluated. The @external_resource directives make
+  # `mix compile` re-fire when the XML files change.
   @ch_config_dir Path.expand("../../../scripts/clickhouse-config", __DIR__)
+  @external_resource Path.join(@ch_config_dir, "logs.xml")
+  @external_resource Path.join(@ch_config_dir, "ipv4-only.xml")
+  @external_resource Path.join(@ch_config_dir, "low-resources.xml")
+  @external_resource Path.join(@ch_config_dir, "default-profile-low-resources-overrides.xml")
 
-  defp ch_overlay(basename),
-    do: File.read!(Path.join(@ch_config_dir, basename))
+  @ch_logs File.read!(Path.join(@ch_config_dir, "logs.xml"))
+  @ch_ipv4 File.read!(Path.join(@ch_config_dir, "ipv4-only.xml"))
+  @ch_lowres File.read!(Path.join(@ch_config_dir, "low-resources.xml"))
+  @ch_users_lowres File.read!(
+                     Path.join(@ch_config_dir, "default-profile-low-resources-overrides.xml")
+                   )
 
   deploy :demo_db, pool: "mac_zroot" do
     dataset "jails/pg" do
@@ -120,19 +131,19 @@ defmodule Zed.Examples.DemoDbJails do
       # inside the jail rootfs (not on the mounted data volume, so
       # host-side jail_file writes them directly).
       jail_file "/usr/local/etc/clickhouse-server/config.d/logs.xml",
-        content: ch_overlay("logs.xml"),
+        content: @ch_logs,
         mode: 0o644
 
       jail_file "/usr/local/etc/clickhouse-server/config.d/ipv4-only.xml",
-        content: ch_overlay("ipv4-only.xml"),
+        content: @ch_ipv4,
         mode: 0o644
 
       jail_file "/usr/local/etc/clickhouse-server/config.d/low-resources.xml",
-        content: ch_overlay("low-resources.xml"),
+        content: @ch_lowres,
         mode: 0o644
 
       jail_file "/usr/local/etc/clickhouse-server/users.d/default-profile-low-resources-overrides.xml",
-        content: ch_overlay("default-profile-low-resources-overrides.xml"),
+        content: @ch_users_lowres,
         mode: 0o644
 
       setup do
