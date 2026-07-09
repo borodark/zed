@@ -34,11 +34,14 @@ PIDFILE="/var/run/${APP}.pid"
 case "${1:-}" in
   daemon)
     # `daemon -f` properly detaches (double-fork, closes stdin/stdout/stderr,
-    # setsid). Without this, a backgrounded sh inherits pipes from
-    # bastille cmd's process; bastille cmd's wait() then never returns
-    # because the child keeps those pipes open. Real BEAM releases use
-    # daemon(8) inside bin/<app> too.
-    daemon -f -p "${PIDFILE}" sh -c 'while :; do sleep 60; done'
+    # setsid). Exec `$0` (this script's path) rather than `sh -c`, so the
+    # daemonized process's argv[0] matches the `command=` line in rc.d and
+    # rc.subr's check_process/status probe succeeds.
+    daemon -f -p "${PIDFILE}" "$0" _run
+    ;;
+  _run)
+    # Long-running loop — argv[0] is $0 so rc.subr's procname check hits.
+    while :; do sleep 60; done
     ;;
   stop)
     if [ -f "${PIDFILE}" ]; then
