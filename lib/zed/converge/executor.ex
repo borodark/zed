@@ -194,7 +194,12 @@ defmodule Zed.Converge.Executor do
     jail = to_string(args.jail)
     service = to_string(args.service)
     mount_in_jail = args.mount_in_jail
-    user = args[:user] || service
+    # Do NOT default user to service name — plan intentionally passes
+    # nil when the DSL didn't declare `user`, so rc.subr runs the
+    # command as root. Falling back to service here re-introduces the
+    # `su: unknown login: <service>` failure that d90c105 was meant
+    # to fix.
+    user = args[:user]
     env_file = args[:env_file]
 
     rc_path =
