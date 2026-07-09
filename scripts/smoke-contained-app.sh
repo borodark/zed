@@ -107,9 +107,17 @@ verify() {
         rc=1
     fi
 
-    # Service running
-    if jail_running "${JAIL}" && doas bastille cmd "${JAIL}" service "${APP}" status >/dev/null; then
-        log "  [OK] service ${APP} running inside jail"
+    # Service running — check pidfile + process directly rather than
+    # `service ... status`. rc.subr's status compares the running
+    # process's argv[0] against the rc.d `command=` line, which fails
+    # for our shell-stub tarball because the kernel loaded /bin/sh to
+    # interpret the script. A real BEAM release with a compiled
+    # bin/<app> binary would match naturally, but for this Path C1
+    # smoke the process-alive check is what actually proves the
+    # daemon detached correctly.
+    if jail_running "${JAIL}" && doas bastille cmd "${JAIL}" sh -c \
+       "[ -f /var/run/${APP}.pid ] && kill -0 \$(cat /var/run/${APP}.pid)" >/dev/null 2>&1; then
+        log "  [OK] service ${APP} running inside jail (pidfile probe)"
     else
         log "  [FAIL] service ${APP} not running inside jail"
         rc=1
