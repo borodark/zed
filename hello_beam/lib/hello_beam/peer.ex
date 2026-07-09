@@ -13,7 +13,12 @@ defmodule HelloBeam.Peer do
   dependency — hello_beam is a fixture, not a real app.
   """
 
-  use GenServer
+  # `restart: :transient` — the supervisor won't restart when we
+  # stop with :normal after a successful connect. Under the default
+  # :permanent policy the peer would reconnect → stop → restart in a
+  # tight loop, exhaust max_restarts, and take down the whole
+  # application after ~5 seconds.
+  use GenServer, restart: :transient
   require Logger
 
   @tick_ms 1_000
