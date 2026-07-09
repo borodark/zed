@@ -91,6 +91,13 @@ defmodule Zed.Examples.DemoDbJails do
         # sysrc-set data path once; sysrc is idempotent.
         cmd "sysrc -f /etc/rc.conf.d/postgresql postgresql_data=/var/db/postgres/16/data"
 
+        # The data-volume nullfs mount inherits the host ZFS dataset's
+        # root:wheel ownership. initdb runs as the postgres user and
+        # can't create subdirs inside a root-owned mount target.
+        # Chown the mount root — this propagates through nullfs to the
+        # underlying ZFS dataset (writable). Idempotent.
+        cmd "chown postgres:postgres /var/db/postgres"
+
         # initdb only if the target doesn't already have a PG_VERSION
         # file. `test -f` short-circuits so re-converge is a no-op.
         # Use `oneinitdb` (not `initdb`) — the `one` prefix bypasses
