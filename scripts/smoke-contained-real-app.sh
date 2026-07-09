@@ -116,7 +116,7 @@ verify() {
     # `run_erl` doesn't write a shell pidfile. Ask epmd for the
     # registered node list; a properly distributed release shows up.
     if jail_running "${JAIL}" && \
-       doas bastille cmd "${JAIL}" /opt/${APP}/current/erts-*/bin/epmd -names 2>/dev/null | \
+       doas bastille cmd "${JAIL}" sh -c "/opt/${APP}/current/erts-*/bin/epmd -names" 2>/dev/null | \
        grep -q "name ${APP} at port"; then
         log "  [OK] BEAM node ${APP} registered with epmd inside jail"
     else
