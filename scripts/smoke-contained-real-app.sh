@@ -78,12 +78,15 @@ verify() {
     if doas test -f "${env_file}"; then
         log "  [OK] env file written at /var/db/zed/${APP}.env"
 
-        # Content probe — RELEASE_NODE + RELEASE_COOKIE
-        if doas grep -q '^RELEASE_NODE=' "${env_file}" && \
-           doas grep -q '^RELEASE_COOKIE=' "${env_file}"; then
-            log "  [OK] env file contains RELEASE_NODE + RELEASE_COOKIE"
+        # Content probe — must be exported so mix release's bin/<app>
+        # child inherits them, plus RELEASE_DISTRIBUTION to enable
+        # net_kernel.
+        if doas grep -q '^export RELEASE_NODE=' "${env_file}" && \
+           doas grep -q '^export RELEASE_COOKIE=' "${env_file}" && \
+           doas grep -q '^export RELEASE_DISTRIBUTION=' "${env_file}"; then
+            log "  [OK] env file exports RELEASE_DISTRIBUTION + NODE + COOKIE"
         else
-            log "  [FAIL] env file missing RELEASE_NODE or RELEASE_COOKIE"
+            log "  [FAIL] env file missing an exported RELEASE_* var"
             rc=1
         fi
 
@@ -109,12 +112,15 @@ verify() {
         rc=1
     fi
 
-    # BEAM process running — mix release's `daemon` runner
+    # BEAM process running — mix release's `daemon` runner via
+    # `run_erl` doesn't write a shell pidfile. Ask epmd for the
+    # registered node list; a properly distributed release shows up.
     if jail_running "${JAIL}" && \
-       doas bastille cmd "${JAIL}" sh -c "[ -f /var/run/${APP}.pid ] && kill -0 \$(cat /var/run/${APP}.pid)" >/dev/null 2>&1; then
-        log "  [OK] release daemon running inside jail (pidfile probe)"
+       doas bastille cmd "${JAIL}" /opt/${APP}/current/erts-*/bin/epmd -names 2>/dev/null | \
+       grep -q "name ${APP} at port"; then
+        log "  [OK] BEAM node ${APP} registered with epmd inside jail"
     else
-        log "  [FAIL] release daemon not running inside jail"
+        log "  [FAIL] BEAM node ${APP} not registered with epmd"
         rc=1
     fi
 
