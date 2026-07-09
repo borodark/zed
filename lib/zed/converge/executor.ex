@@ -657,7 +657,7 @@ defmodule Zed.Converge.Executor do
     node = Map.get(opts, :node)
     cookie_ref = Map.get(opts, :cookie)
 
-    with :ok <- ensure_distribution_started(),
+    with :ok <- ensure_distribution_started(node),
          {:ok, cookie} <- resolve_probe_cookie(cookie_ref),
          :ok <- set_cookie_if_present(node, cookie) do
       case :net_adm.ping(node) do
@@ -671,14 +671,17 @@ defmodule Zed.Converge.Executor do
 
   defp probe_once(other, _opts), do: {:error, {:unsupported_probe_type, other}}
 
-  defp ensure_distribution_started do
+  defp ensure_distribution_started(target_node) do
     case Node.self() do
       :nonode@nohost ->
-        # Random short-name so we don't collide with the host's own
-        # distribution if one is running.
-        name = :"zed_probe_#{System.unique_integer([:positive])}"
+        # Match the target's name mode. If target hostname contains
+        # a dot (FQDN or IP), use :longnames — otherwise the ping
+        # fails with "Hostname X is illegal" regardless of network.
+        mode = detect_name_mode(target_node)
+        host = local_host_for(mode)
+        name = :"zed_probe_#{System.unique_integer([:positive])}@#{host}"
 
-        case Node.start(name, :shortnames) do
+        case Node.start(name, mode) do
           {:ok, _} -> :ok
           {:error, {:already_started, _}} -> :ok
           {:error, reason} -> {:error, {:disterl_start_failed, reason}}
@@ -688,6 +691,34 @@ defmodule Zed.Converge.Executor do
         :ok
     end
   end
+
+  # Longname = hostname part has a dot (typical for FQDN or IP address).
+  # Shortname = bare word. Erlang's own :net_kernel makes this
+  # distinction and refuses cross-mode ping.
+  defp detect_name_mode(node_atom) do
+    case node_atom |> Atom.to_string() |> String.split("@", parts: 2) do
+      [_name, host] ->
+        if String.contains?(host, "."), do: :longnames, else: :shortnames
+
+      _ ->
+        :shortnames
+    end
+  end
+
+  defp local_host_for(:shortnames), do: hostname_short()
+  defp local_host_for(:longnames), do: hostname_long()
+
+  defp hostname_short do
+    case :inet.gethostname() do
+      {:ok, h} -> to_string(h)
+      _ -> "localhost"
+    end
+  end
+
+  # Use 127.0.0.1 as the longname host — always dotted, always
+  # routable. Ties us to loopback but that's fine for the probe;
+  # target-side routes back over the real interface.
+  defp hostname_long, do: "127.0.0.1"
 
   # Accept either an already-resolved binary or a Zed.Beam.Env
   # cookie ref. Same shapes as :jail_app :deploy so operators pass
