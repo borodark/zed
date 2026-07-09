@@ -21,18 +21,17 @@ ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-val
 
 ## Development Environment
 
-- **Primary dev**: FreeBSD jail `plausible` on TrueNAS at 192.168.0.33 (DHCP, currently 192.168.0.116)
-- **ZFS pool**: `jeff` — test dataset `jeff/zed-test` delegated to jail
-- **Erlang**: OTP 26 (pkg), Elixir 1.17.3 (pkg)
-- **Work as root** in jail (ZFS operations require root)
-- **Git remote**: `git@192.168.0.33:/mnt/jeff/home/git/repos/zed.git`
+- **Primary dev host**: `mac-248` — FreeBSD 15 with Bastille, reachable via `ssh 192.168.0.248` from the workstation
+- **ZFS pool**: `mac_zroot` (dev pool on mac-248); jail roots at `/usr/local/bastille/jails/<name>/root/`
+- **Erlang**: OTP 27, Elixir 1.18 (pkg on mac-248)
+- **Elevation**: `permit nopass io as root` in `/usr/local/etc/doas.conf` — `doas` runs commands as root without a password prompt
 - **Workstation**: `/home/io/projects/learn_erl/zed/` on Linux (for editing, pushing)
 
 ## Test Suites
 
-- `mix test` — 37 unit tests (DSL, IR, plan, jail, agent, cluster). Run anywhere.
-- `mix test --include zfs_live` — 21 ZFS integration tests against real `jeff/zed-test`. Requires root + ZFS.
-- **Total**: 58 tests, 0 failures on both Linux and FreeBSD.
+- `mix test` — full suite (DSL, IR, plan, jail, agent, cluster, converge, health, secrets, etc.). Run anywhere.
+- `mix test --include zfs_live --include bastille_live` — adds ZFS + Bastille live integration on FreeBSD.
+- **Total (as of 639fb54)**: 328 tests, 0 failures, 52 excluded.
 
 ## DSL Example
 

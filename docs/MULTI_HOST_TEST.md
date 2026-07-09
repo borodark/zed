@@ -1,5 +1,10 @@
 # Multi-Host RPC Test Setup
 
+> **Updated 2026-07-09 for Bastille (A5 milestone migrated from iocage).**
+> The topology and testing strategy below still apply; the jail primitives
+> have been swapped from `iocage` to `bastille`. Jail roots now live under
+> `/usr/local/bastille/jails/<name>/root/` instead of `/mnt/iocage/jails/<name>/root/`.
+
 Testing Zed's distributed deployment across multiple FreeBSD jails on TrueNAS.
 
 
@@ -32,7 +37,7 @@ Testing Zed's distributed deployment across multiple FreeBSD jails on TrueNAS.
 
 ## Prerequisites
 
-- TrueNAS with iocage
+- TrueNAS with Bastille
 - Root access to TrueNAS host
 - ZFS pool `jeff` (or adjust commands below)
 
@@ -50,31 +55,22 @@ ssh root@192.168.0.33
 ### 1.1 Create the Jail
 
 ```sh
-# First, check what releases are available locally
-iocage list -r
-
-# If empty, fetch a release (or list remote releases)
-iocage fetch -r 13.1-RELEASE
-# Or to see what's available remotely:
-# iocage fetch -r --list
-
 # Check what release the host is running (safest to match)
 freebsd-version
-# e.g., 13.1-RELEASE-p9
+# e.g., 15.0-RELEASE
 
-# Create jail with available release and DHCP networking
-iocage create -n zed-agent-1 -r 13.5-RELEASE \
-  dhcp=on \
-  bpf=yes \
-  vnet=on \
-  allow_raw_sockets=1 \
-  boot=on
+# Bootstrap the release into Bastille (idempotent)
+bastille bootstrap 15.0-RELEASE
 
-# Start the jail
-iocage start zed-agent-1
+# Create jail with DHCP-style address on the bastille0 loopback
+# (Bastille assigns an IP on lo1/bastille0; adjust for your host layout.)
+bastille create zed-agent-1 15.0-RELEASE 10.17.89.10/24
+
+# Start the jail (bastille create auto-starts by default; explicit form:)
+bastille start zed-agent-1
 
 # Verify it's running
-iocage list
+bastille list
 ```
 
 ### 1.2 Delegate ZFS Dataset
@@ -84,37 +80,29 @@ iocage list
 zfs create jeff/agent1
 
 # Delegate ZFS permissions to the jail
-# This allows the jail to manage child datasets
-iocage set allow_mount=1 zed-agent-1
-iocage set allow_mount_zfs=1 zed-agent-1
-iocage set enforce_statfs=1 zed-agent-1
+# (Bastille sets allow.mount + enforce_statfs via jail.conf.d parameters.)
+bastille config zed-agent-1 set allow.mount 1
+bastille config zed-agent-1 set allow.mount.zfs 1
+bastille config zed-agent-1 set enforce_statfs 1
 
 # Delegate the dataset
 zfs allow -ldu root create,destroy,mount,snapshot,rollback,hold,release jeff/agent1
 
-# Mount the dataset in the jail
-iocage fstab -a zed-agent-1 "/mnt/jeff/agent1 /mnt/agent1 nullfs rw 0 0"
-
-# Or use jail-specific ZFS delegation
-iocage set jail_zfs=on zed-agent-1
-iocage set jail_zfs_dataset=jeff/agent1 zed-agent-1
+# Mount the dataset into the jail via nullfs
+bastille mount zed-agent-1 /mnt/jeff/agent1 /mnt/agent1 nullfs rw
 ```
 
 ### 1.3 Install Erlang/Elixir in Agent Jail
 
 ```sh
-# Enter the jail
-iocage console zed-agent-1
+# Install packages non-interactively from the host
+bastille pkg zed-agent-1 update
+bastille pkg zed-agent-1 install -y erlang elixir git
 
-# Install packages
-pkg update
-pkg install -y erlang elixir git
-
-# Verify
+# Verify (drop into the jail's shell)
+bastille console zed-agent-1
 elixir --version
 erl -version
-
-# Exit jail
 exit
 ```
 
@@ -122,27 +110,22 @@ exit
 
 ```sh
 # From TrueNAS host, copy the zed project
-# Option A: Clone from git
-iocage exec zed-agent-1 "cd /root && git clone git@192.168.0.33:/mnt/jeff/home/git/repos/zed.git"
+# Option A: Clone from git inside the jail
+bastille cmd zed-agent-1 sh -c "cd /root && git clone git@192.168.0.33:/mnt/jeff/home/git/repos/zed.git"
 
-# Option B: Copy from plausible jail
-cp -r /mnt/jeff/home/io/zed /mnt/jeff/iocage/jails/zed-agent-1/root/root/zed
+# Option B: Copy from plausible jail's mount into agent's root
+cp -r /mnt/jeff/home/io/zed /usr/local/bastille/jails/zed-agent-1/root/root/zed
 
-# Enter jail and compile
-iocage console zed-agent-1
-cd /root/zed
-mix local.hex --force
-mix local.rebar --force
-mix deps.get
-mix compile
+# Compile inside the jail
+bastille cmd zed-agent-1 sh -c "cd /root/zed && mix local.hex --force && mix local.rebar --force && mix deps.get && mix compile"
 ```
 
 ### 1.5 Get Jail IP Address
 
 ```sh
 # From TrueNAS host
-iocage exec zed-agent-1 "ifconfig epair0b | grep inet"
-# Note the IP, e.g., 192.168.0.117
+bastille cmd zed-agent-1 sh -c "ifconfig | grep inet"
+# Note the IP, e.g., 10.17.89.10
 ```
 
 ---
@@ -368,8 +351,8 @@ zfs destroy -r jeff/agent1/testapp
 
 ```sh
 # On TrueNAS host
-iocage stop zed-agent-1
-iocage destroy -f zed-agent-1
+bastille stop zed-agent-1
+bastille destroy -a -f zed-agent-1
 
 # Remove delegated dataset (optional)
 zfs destroy -r jeff/agent1
@@ -387,10 +370,10 @@ JAIL_NAME="zed-agent-1"
 DATASET="jeff/agent1"
 
 echo "Stopping jail $JAIL_NAME..."
-iocage stop $JAIL_NAME 2>/dev/null
+bastille stop $JAIL_NAME 2>/dev/null
 
 echo "Destroying jail $JAIL_NAME..."
-iocage destroy -f $JAIL_NAME 2>/dev/null
+bastille destroy -a -f $JAIL_NAME 2>/dev/null
 
 echo "Destroying dataset $DATASET..."
 zfs destroy -r $DATASET 2>/dev/null
@@ -419,10 +402,10 @@ Node.get_cookie()
 
 ```sh
 # Check if jail is running
-iocage list
+bastille list
 
 # Check if Elixir process is running in jail
-iocage exec zed-agent-1 "ps aux | grep beam"
+bastille cmd zed-agent-1 sh -c "ps aux | grep beam"
 
 # Check network connectivity
 ping zed-agent-1
@@ -451,12 +434,13 @@ Zed.Cluster.converge(:"zed@zed-agent-1", ir, timeout: 120_000)
 
 | Command | Purpose |
 |---------|---------|
-| `iocage create -n NAME -r 13.2-RELEASE` | Create jail |
-| `iocage start NAME` | Start jail |
-| `iocage console NAME` | Enter jail shell |
-| `iocage exec NAME "cmd"` | Run command in jail |
-| `iocage stop NAME` | Stop jail |
-| `iocage destroy -f NAME` | Remove jail |
+| `bastille create NAME 15.0-RELEASE IP/CIDR` | Create jail |
+| `bastille start NAME` | Start jail |
+| `bastille console NAME` | Enter jail shell |
+| `bastille cmd NAME sh -c "cmd"` | Run command in jail |
+| `bastille pkg NAME install -y PKG` | Install packages in jail |
+| `bastille stop NAME` | Stop jail |
+| `bastille destroy -a -f NAME` | Remove jail |
 | `zfs allow DATASET` | Check ZFS permissions |
 | `Node.connect(:'name@host')` | Connect Erlang nodes |
 | `Node.list()` | List connected nodes |

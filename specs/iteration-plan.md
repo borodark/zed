@@ -45,6 +45,24 @@
 | **D — Advanced** (Probnik Vault + Shamir + installer) | 5.5 pm | Only if C ships |
 | **Total to hypothetical MVP + passwordless auth + Bastille** | **17.1 pm** | |
 
+### Converge / cluster milestones (Path B + Path C) — shipped 2026-07-09
+
+Distinct from the Layer A/B/C rollup above; these are the executor and
+cluster milestones described in [converge-jail-executor.md](converge-jail-executor.md)
+and [demo-cluster-plan.md](demo-cluster-plan.md).
+
+| Milestone | Description | Status |
+|---|---|---|
+| **Path B — Jail executor (6 slices)** | Wire `jail_pkg`, `jail_mount`, `jail_svc`, `jail_file`, `jail_config`, `jail_setup` stubs to real Bastille calls | ✅ Shipped |
+| **DemoDbJails** | Postgres + ClickHouse deployable from a single `converge()` | ✅ Shipped |
+| **Path C1 — Jail-contained shell-stub app** | App verb deploys inside a Bastille jail | ✅ Shipped 2026-07-09 |
+| **Path C2 — Health probes** | `health :tcp`, `health :http`, `health :beam_ping` wired to converge | ✅ Shipped 2026-07-09 |
+| **Path C3 — Real mix release + disterl over bastille0** | Full `mix release` deployed and reachable via Erlang distribution over the bastille0 loopback | ✅ Shipped 2026-07-09 |
+| **Path C4 — Two-node cluster** | `hello_beam` two-node cluster via `PEER_NODE` | ✅ Shipped 2026-07-09 |
+| **Path C5 — 5-node cluster** | `hello_beam` five-node cluster via libcluster + Zed `cluster` artifact | ✅ Shipped 2026-07-09 (commit 639fb54) |
+
+Test suite as of 639fb54: **328 tests, 0 failures, 52 excluded.**
+
 ---
 
 ## Layer A — Retrofits

@@ -93,6 +93,10 @@ Zed.Cluster.converge_coordinated(ir)
 
 ## GPU node abstraction — current progress
 
+**tl;dr:** the Nx/Vulkan runtime side shipped in the `nx_vulkan` repo
+(May 2026); Zed's deploy-side `deploy :gpu_cluster` DSL below is on the
+roadmap and hasn't been implemented yet.
+
 The vision below is intact. The infrastructure for the *runtime side*
 (driving the GPU from BEAM) shipped in May 2026 in the sibling
 [`nx_vulkan`](https://github.com/borodark/nx_vulkan) repository; the *deploy side* (zed's
@@ -275,11 +279,11 @@ cd zed
 mix deps.get
 mix compile          # builds priv/peer_cred.so via elixir_make
 
-# Run tests
-mix test                                       # 216 unit/integration tests
+# Run tests (328 tests, 0 failures, 52 excluded as of 2026-07-09 / commit 639fb54)
+mix test                                       # unit + integration
 ZED_TEST_DATASET=<pool>/zed-test \
-  doas mix test --include zfs_live             # + 24 ZFS-on-FreeBSD tests
-mix test --include bastille_live               # + 7 Bastille-on-FreeBSD tests
+  doas mix test --include zfs_live             # + ZFS-on-FreeBSD tests
+mix test --include bastille_live               # + Bastille-on-FreeBSD tests
 ```
 
 ## Requirements
@@ -303,6 +307,13 @@ The roadmap lives in [`specs/iteration-plan.md`](specs/iteration-plan.md); each 
 | A4 | SSH-key challenge auth | ✅ Done | `ssh-keygen -Y sign` flow + login script |
 | A5.1 | Bastille jail adapter | ✅ Done | 540 LOC; live-verified after seven real-world bugs ([blog](http://www.dataalienist.com/blog-lie-at-exit-zero.html)) |
 | A5a | **Privilege boundary** (zedweb / zedops split) | ✅ Done | Two `mix release` targets, Unix-socket transport, `getpeereid(2)` NIF, capability-scoped doas, `host-bring-up.sh` |
+| Path B | Jail executor (6 slices) | ✅ Done | `jail_pkg`/`jail_mount`/`jail_svc`/`jail_file`/`jail_config`/`jail_setup` wired to real Bastille calls |
+| DemoDbJails | Postgres + ClickHouse from one converge | ✅ Done | Live-verified on mac-248 |
+| Path C1 | Jail-contained shell-stub app deploy | ✅ Done 2026-07-09 | App verb deploys inside a Bastille jail |
+| Path C2 | Health probes wired to converge | ✅ Done 2026-07-09 | `:tcp`, `:http`, `:beam_ping` |
+| Path C3 | Real `mix release` + disterl over bastille0 | ✅ Done 2026-07-09 | Full release + Erlang distribution across loopback |
+| Path C4 | Two-node `hello_beam` cluster | ✅ Done 2026-07-09 | `PEER_NODE`-driven pairing |
+| Path C5 | 5-node `hello_beam` cluster | ✅ Done 2026-07-09 | libcluster + Zed `cluster` artifact (commit 639fb54) |
 | B0 | `zedz` mobile QR scanner | Planned | Fork of probnik with `zed_admin` payload handler |
 
 Layers C (NAS-adjacent: SMB + Time Machine) and D (Probnik Vault + Shamir) are shelved per the iteration plan; unshelve only on explicit decision.
