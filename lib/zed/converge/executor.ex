@@ -723,8 +723,16 @@ defmodule Zed.Converge.Executor do
   defp render_jail_rc_script(service, mount_in_jail, user, env_file) do
     env_line =
       case env_file do
-        nil -> ""
-        path -> "\n[ -r #{path} ] && . #{path}"
+        nil ->
+          ""
+
+        path ->
+          # `set -a` auto-exports every var assigned during the source,
+          # so mix release's bin/<app> child inherits RELEASE_NODE,
+          # RELEASE_COOKIE, etc. Zed.Beam.Env writes `export` already
+          # but this belt-and-suspenders handles env files a user
+          # brings in from elsewhere.
+          "\n[ -r #{path} ] && { set -a; . #{path}; set +a; }"
       end
 
     user_line =

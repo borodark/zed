@@ -76,12 +76,17 @@ defmodule Zed.Beam.Env do
   files must be POSIX-shell parseable.
 
       iex> Zed.Beam.Env.compose_env_file(:"foo@10.0.0.1", "secret")
-      "RELEASE_NODE=\\"foo@10.0.0.1\\"\\nRELEASE_COOKIE=\\"secret\\"\\n"
+      "export RELEASE_NODE=\\"foo@10.0.0.1\\"\\nexport RELEASE_COOKIE=\\"secret\\"\\n"
 
+  The `export` prefix is essential: without it, sourcing the file
+  from the rc.d script sets the variables only in the sourcing
+  shell's own environment; the child `bin/<app>` process doesn't
+  inherit them and mix release falls back to auto-generating a
+  short-name + random cookie.
   """
   @spec compose_env_file(node :: atom, cookie :: binary) :: binary
   def compose_env_file(node_name, cookie)
       when is_atom(node_name) and is_binary(cookie) do
-    ~s(RELEASE_NODE="#{node_name}"\nRELEASE_COOKIE="#{cookie}"\n)
+    ~s(export RELEASE_NODE="#{node_name}"\nexport RELEASE_COOKIE="#{cookie}"\n)
   end
 end

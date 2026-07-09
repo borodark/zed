@@ -405,8 +405,8 @@ defmodule Zed.Converge.ExecutorTest do
       env_path = Path.join([dir, "web", "root", "var", "db", "zed", "myapp.env"])
       assert File.exists?(env_path)
       content = File.read!(env_path)
-      assert content =~ ~s(RELEASE_NODE="myapp@10.0.0.10")
-      assert content =~ ~s(RELEASE_COOKIE="cookie_abc")
+      assert content =~ ~s(export RELEASE_NODE="myapp@10.0.0.10")
+      assert content =~ ~s(export RELEASE_COOKIE="cookie_abc")
 
       # Mode 0o400 (only owner can read; env file typically holds a secret)
       stat = File.stat!(env_path)

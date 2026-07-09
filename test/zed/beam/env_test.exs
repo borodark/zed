@@ -54,9 +54,11 @@ defmodule Zed.Beam.EnvTest do
   end
 
   describe "compose_env_file/2" do
-    test "returns POSIX-shell quoted RELEASE_NODE + RELEASE_COOKIE" do
+    test "returns POSIX-shell quoted and exported RELEASE_NODE + RELEASE_COOKIE" do
       out = Env.compose_env_file(:"foo@10.0.0.1", "supersecret")
-      assert out == ~s(RELEASE_NODE="foo@10.0.0.1"\nRELEASE_COOKIE="supersecret"\n)
+
+      assert out ==
+               ~s(export RELEASE_NODE="foo@10.0.0.1"\nexport RELEASE_COOKIE="supersecret"\n)
     end
   end
 end
