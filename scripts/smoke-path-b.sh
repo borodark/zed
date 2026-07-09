@@ -34,7 +34,7 @@ clean() {
     for j in $JAILS; do
         if doas bastille list | awk 'NR>1 {print $2}' | grep -qx "$j"; then
             log "  destroying jail $j"
-            doas bastille destroy -a -f "$j" || true
+            yes | doas bastille destroy -a -f "$j" || true
         else
             log "  jail $j not present"
         fi

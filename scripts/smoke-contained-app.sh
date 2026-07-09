@@ -23,7 +23,9 @@ clean() {
 
     if doas bastille list | awk 'NR>1 {print $2}' | grep -qx "${JAIL}"; then
         log "  destroying jail ${JAIL}"
-        doas bastille destroy -a -f "${JAIL}" || true
+        # `-f` should suppress the "are you sure" prompt but doesn't
+        # always. Pipe `yes` so the second confirmation gets an answer.
+        yes | doas bastille destroy -a -f "${JAIL}" || true
     else
         log "  jail ${JAIL} not present"
     fi
