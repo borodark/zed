@@ -33,10 +33,12 @@ PIDFILE="/var/run/${APP}.pid"
 
 case "${1:-}" in
   daemon)
-    # Background a long-running sleep so rc.subr's pidfile check
-    # reports :running. Real releases delegate to BEAM's daemon runner.
-    (while :; do sleep 60; done) &
-    echo $! > "${PIDFILE}"
+    # `daemon -f` properly detaches (double-fork, closes stdin/stdout/stderr,
+    # setsid). Without this, a backgrounded sh inherits pipes from
+    # bastille cmd's process; bastille cmd's wait() then never returns
+    # because the child keeps those pipes open. Real BEAM releases use
+    # daemon(8) inside bin/<app> too.
+    daemon -f -p "${PIDFILE}" sh -c 'while :; do sleep 60; done'
     ;;
   stop)
     if [ -f "${PIDFILE}" ]; then
