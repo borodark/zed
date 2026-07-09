@@ -296,6 +296,152 @@ defmodule Zed.Converge.ExecutorTest do
     end
   end
 
+  describe ":jail_app :deploy" do
+    setup do
+      tmp = System.tmp_dir!() |> Path.join("zed-jail-app-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      Application.put_env(:zed, Zed.Platform.Bastille,
+        runner: Mock,
+        jails_dir: tmp
+      )
+
+      on_exit(fn ->
+        File.rm_rf!(tmp)
+        Application.delete_env(:zed, Zed.Platform.Bastille)
+      end)
+
+      {:ok, jails_dir: tmp}
+    end
+
+    test "returns :no_tarball when release_path is nil", %{jails_dir: _dir} do
+      step = %Step{
+        id: "jail:app:web:zedweb",
+        type: :jail_app,
+        action: :deploy,
+        args: %{
+          jail: :web,
+          app: :zedweb,
+          version: "0.1.0",
+          release_path: nil,
+          mount_in_jail: "/opt/zedweb"
+        }
+      }
+
+      assert {:ok, [{"jail:app:web:zedweb", {:jail_app_no_tarball, "web", :zedweb}}]} =
+               run_step(step)
+    end
+
+    test "extracts tarball into <jails_dir>/<jail>/root<mount_in_jail>", %{jails_dir: dir} do
+      # Build a small tarball with a fake release layout
+      staging = Path.join(dir, "staging-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(staging, "bin"))
+      File.write!(Path.join([staging, "bin", "myapp"]), "#!/bin/sh\necho hello\n")
+
+      tar_path = Path.join(dir, "myapp-0.1.0.tar.gz")
+
+      {_, 0} =
+        System.cmd("tar", ["czf", tar_path, "-C", staging, "."], stderr_to_stdout: true)
+
+      step = %Step{
+        id: "jail:app:web:myapp",
+        type: :jail_app,
+        action: :deploy,
+        args: %{
+          jail: :web,
+          app: :myapp,
+          version: "0.1.0",
+          release_path: tar_path,
+          mount_in_jail: "/opt/myapp"
+        }
+      }
+
+      assert {:ok, [{"jail:app:web:myapp", {:jail_app_deployed, "web", :myapp, version_dir}}]} =
+               run_step(step)
+
+      # Extraction landed at <jails_dir>/web/root/opt/myapp/releases/0.1.0/
+      assert String.contains?(
+               version_dir,
+               "web/root/opt/myapp/releases/0.1.0"
+             )
+
+      # And the `current` symlink points to it
+      current = Path.join([dir, "web", "root", "opt", "myapp", "current"])
+      assert File.exists?(current)
+      # Symlink target should exist and contain our fake bin/myapp
+      assert File.exists?(Path.join([current, "bin", "myapp"]))
+    end
+  end
+
+  describe ":jail_service :install" do
+    setup do
+      tmp = System.tmp_dir!() |> Path.join("zed-jail-service-test-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      Application.put_env(:zed, Zed.Platform.Bastille,
+        runner: Mock,
+        jails_dir: tmp
+      )
+
+      on_exit(fn ->
+        File.rm_rf!(tmp)
+        Application.delete_env(:zed, Zed.Platform.Bastille)
+      end)
+
+      {:ok, jails_dir: tmp}
+    end
+
+    test "writes rc.d script inside the jail rootfs", %{jails_dir: dir} do
+      step = %Step{
+        id: "jail:service:web:myapp",
+        type: :jail_service,
+        action: :install,
+        args: %{
+          jail: :web,
+          service: :myapp,
+          mount_in_jail: "/opt/myapp",
+          user: "myapp",
+          env_file: "/var/db/myapp/env"
+        }
+      }
+
+      assert {:ok, [{"jail:service:web:myapp", {:jail_service_installed, "web", "myapp"}}]} =
+               run_step(step)
+
+      rc_path = Path.join([dir, "web", "root", "usr", "local", "etc", "rc.d", "myapp"])
+      assert File.exists?(rc_path)
+
+      content = File.read!(rc_path)
+      assert content =~ "PROVIDE: myapp"
+      assert content =~ ~s(command="/opt/myapp/current/bin/myapp")
+      assert content =~ ". /var/db/myapp/env"
+
+      stat = File.stat!(rc_path)
+      # 0755 permissions expected
+      assert Bitwise.band(stat.mode, 0o777) == 0o755
+    end
+
+    test "second run with same content returns :jail_service_already_current", %{jails_dir: _dir} do
+      step = %Step{
+        id: "jail:service:web:myapp",
+        type: :jail_service,
+        action: :install,
+        args: %{
+          jail: :web,
+          service: :myapp,
+          mount_in_jail: "/opt/myapp",
+          user: "myapp",
+          env_file: nil
+        }
+      }
+
+      assert {:ok, _} = run_step(step)
+
+      assert {:ok, [{"jail:service:web:myapp", {:jail_service_already_current, "web", "myapp"}}]} =
+               run_step(step)
+    end
+  end
+
   describe ":jail_setup :run" do
     setup do
       tmp = System.tmp_dir!() |> Path.join("zed-jail-setup-test-#{System.unique_integer([:positive])}")

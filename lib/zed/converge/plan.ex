@@ -26,9 +26,14 @@ defmodule Zed.Converge.Plan do
   def from_diff(diff_entries, opts \\ []) do
     pool = Keyword.get(opts, :pool)
 
+    # Build an app_id -> jail_id map from every jail diff's `contains`
+    # reference. Used at :app expansion time to route contained apps
+    # to their jail-side steps instead of host-side deploys.
+    contains_map = build_contains_map(diff_entries)
+
     steps =
       diff_entries
-      |> Enum.flat_map(&expand_to_steps(&1, pool))
+      |> Enum.flat_map(&expand_to_steps(&1, pool, contains_map))
       |> sort_by_type()
 
     %__MODULE__{
@@ -37,9 +42,23 @@ defmodule Zed.Converge.Plan do
     }
   end
 
+  defp build_contains_map(diffs) do
+    diffs
+    |> Enum.filter(fn
+      %Diff{resource: %{type: :jail}} -> true
+      _ -> false
+    end)
+    |> Enum.reduce(%{}, fn %Diff{resource: jail}, acc ->
+      case jail.config[:contains] do
+        nil -> acc
+        app_id -> Map.put(acc, app_id, jail.id)
+      end
+    end)
+  end
+
   # --- Step Expansion ---
 
-  defp expand_to_steps(%Diff{resource: %{type: :dataset} = node, action: :create}, pool) do
+  defp expand_to_steps(%Diff{resource: %{type: :dataset} = node, action: :create}, pool, _contains_map) do
     pool_path = build_pool_path(pool, node.id)
 
     props =
@@ -58,7 +77,7 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
-  defp expand_to_steps(%Diff{resource: %{type: :dataset} = node, action: :update, changes: changes}, pool) do
+  defp expand_to_steps(%Diff{resource: %{type: :dataset} = node, action: :update, changes: changes}, pool, _contains_map) do
     pool_path = build_pool_path(pool, node.id)
 
     changes
@@ -77,7 +96,7 @@ defmodule Zed.Converge.Plan do
     end)
   end
 
-  defp expand_to_steps(%Diff{resource: %{type: :app} = node, action: action}, pool)
+  defp expand_to_steps(%Diff{resource: %{type: :app} = node, action: action}, pool, contains_map)
        when action in [:create, :update] do
     %{config: config, id: app_id} = node
     ds = config[:dataset]
@@ -85,14 +104,28 @@ defmodule Zed.Converge.Plan do
     mountpoint = config[:mountpoint] || derive_mountpoint(pool_path)
     service_name = config[:service] || to_string(app_id)
 
-    [
-      build_app_deploy_step(node, pool_path, mountpoint),
-      build_service_install_step(app_id, service_name, mountpoint, config),
-      build_service_restart_step(app_id, service_name)
-    ]
+    case Map.get(contains_map, app_id) do
+      nil ->
+        # Host-side app: existing deploy + rc.d on the host.
+        [
+          build_app_deploy_step(node, pool_path, mountpoint),
+          build_service_install_step(app_id, service_name, mountpoint, config),
+          build_service_restart_step(app_id, service_name)
+        ]
+
+      jail_id ->
+        # Jail-contained app: release into jail rootfs, rc.d inside
+        # jail, service start via the Path B jail_svc plumbing. The
+        # host-side deploy + rc.d + restart steps are skipped.
+        [
+          build_jail_app_deploy_step(app_id, jail_id, node),
+          build_jail_service_install_step(app_id, jail_id, service_name, config),
+          build_jail_app_svc_step(app_id, jail_id, service_name)
+        ]
+    end
   end
 
-  defp expand_to_steps(%Diff{resource: %{type: :jail} = node, action: action}, pool)
+  defp expand_to_steps(%Diff{resource: %{type: :jail} = node, action: action}, pool, _contains_map)
        when action in [:create, :update] do
     %{config: config, id: jail_id} = node
     ds = config[:dataset]
@@ -116,7 +149,7 @@ defmodule Zed.Converge.Plan do
   # Zed.Cluster.Config.load!/1, or zed-less via File.read|split).
   # Members may legitimately be empty (cluster declared but unpopulated)
   # — still write the file so the consumer doesn't see a stale one.
-  defp expand_to_steps(%Diff{resource: %{type: :cluster} = node, action: :create}, pool) do
+  defp expand_to_steps(%Diff{resource: %{type: :cluster} = node, action: :create}, pool, _contains_map) do
     [
       %Step{
         id: "cluster:config:#{node.id}",
@@ -131,7 +164,7 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
-  defp expand_to_steps(%Diff{resource: %{type: :tarfs} = node, action: :create}, _pool) do
+  defp expand_to_steps(%Diff{resource: %{type: :tarfs} = node, action: :create}, _pool, _contains_map) do
     [
       %Step{
         id: "tarfs:mount:#{node.id}",
@@ -146,7 +179,7 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
-  defp expand_to_steps(%Diff{resource: %{type: :file} = node, action: :create}, _pool) do
+  defp expand_to_steps(%Diff{resource: %{type: :file} = node, action: :create}, _pool, _contains_map) do
     [
       %Step{
         id: "file:write:#{node.id}",
@@ -163,7 +196,7 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
-  defp expand_to_steps(%Diff{resource: %{type: :service_run} = node, action: :create}, _pool) do
+  defp expand_to_steps(%Diff{resource: %{type: :service_run} = node, action: :create}, _pool, _contains_map) do
     [
       %Step{
         id: "service_run:start:#{node.id}",
@@ -181,7 +214,7 @@ defmodule Zed.Converge.Plan do
     ]
   end
 
-  defp expand_to_steps(_, _pool), do: []
+  defp expand_to_steps(_, _pool, _contains_map), do: []
 
   # The cluster artifact lives under <base>/zed/cluster/. Default
   # base mountpoint is the canonical /var/db/zed (matches what the
@@ -285,6 +318,61 @@ defmodule Zed.Converge.Plan do
       action: :restart,
       args: %{service: service_name},
       deps: ["service:install:#{app_id}"]
+    }
+  end
+
+  # --- Step Builders: Path C jail-contained apps ---
+
+  # Extract release tarball into <jails_dir>/<jail>/root/opt/<app>/
+  # and symlink `current` to the fresh version. The `release_path`
+  # arg is the host path to the tarball; executor reads it there and
+  # writes into the jail rootfs from the host side (nullfs-friendly).
+  defp build_jail_app_deploy_step(app_id, jail_id, %{config: config}) do
+    %Step{
+      id: "jail:app:#{jail_id}:#{app_id}",
+      type: :jail_app,
+      action: :deploy,
+      args: %{
+        jail: jail_id,
+        app: app_id,
+        version: config[:version],
+        release_path: config[:release_path],
+        mount_in_jail: config[:mount_in_jail] || "/opt/#{app_id}",
+        node_name: config[:node_name],
+        cookie: config[:cookie],
+        env_file: config[:env_file]
+      },
+      deps: ["jail:create:#{jail_id}"]
+    }
+  end
+
+  # Write an rc.d script for the app inside the jail rootfs. Path B's
+  # :jail_svc :start step then enables + starts it.
+  defp build_jail_service_install_step(app_id, jail_id, service_name, config) do
+    %Step{
+      id: "jail:service:#{jail_id}:#{app_id}",
+      type: :jail_service,
+      action: :install,
+      args: %{
+        jail: jail_id,
+        service: service_name,
+        mount_in_jail: config[:mount_in_jail] || "/opt/#{app_id}",
+        user: config[:user] || to_string(app_id),
+        env_file: config[:env_file]
+      },
+      deps: ["jail:app:#{jail_id}:#{app_id}"]
+    }
+  end
+
+  # Reuse the Path B :jail_svc :start executor clause — sysrc enable
+  # + service start inside the jail via bastille cmd.
+  defp build_jail_app_svc_step(app_id, jail_id, service_name) do
+    %Step{
+      id: "jail:svc:#{jail_id}:#{service_name}",
+      type: :jail_svc,
+      action: :start,
+      args: %{jail: jail_id, service: service_name, env: nil},
+      deps: ["jail:service:#{jail_id}:#{app_id}"]
     }
   end
 
@@ -452,6 +540,8 @@ defmodule Zed.Converge.Plan do
         jail_mount: 5,
         jail_file: 6,
         jail_setup: 6,
+        jail_app: 6,
+        jail_service: 6,
         app: 6,
         file: 6,
         jail_svc: 7,
@@ -459,7 +549,15 @@ defmodule Zed.Converge.Plan do
         service_run: 9
       }
 
-      action_priority = %{install: 0, create: 1, start: 2, restart: 3, mount: 1, write: 1}
+      action_priority = %{
+        install: 0,
+        deploy: 0,
+        create: 1,
+        start: 2,
+        restart: 3,
+        mount: 1,
+        write: 1
+      }
 
       {
         Map.get(type_priority, step.type, 99),

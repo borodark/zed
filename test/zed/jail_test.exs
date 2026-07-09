@@ -225,6 +225,87 @@ defmodule Zed.JailTest do
       assert "jail:create:pg" in data_mount.deps
     end
 
+    test "contained app routes to :jail_app / :jail_service, skips host-side steps" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :myapp,
+            type: :app,
+            config: %{
+              dataset: "jails/myapp",
+              version: "0.1.0",
+              release_path: "/staging/myapp-0.1.0.tar.gz",
+              node_name: :"myapp@10.0.0.10"
+            }
+          },
+          action: :create,
+          current: %{},
+          desired: %{},
+          changes: []
+        },
+        %Diff{
+          resource: %Node{
+            id: :myapp_jail,
+            type: :jail,
+            config: %{
+              dataset: "jails/myapp",
+              ip4: "10.0.0.10/24",
+              contains: :myapp
+            }
+          },
+          action: :create,
+          current: %{jail: nil},
+          desired: %{},
+          changes: []
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "tank")
+      types = plan.steps |> Enum.map(& &1.type) |> MapSet.new()
+
+      # Jail-side steps present
+      assert MapSet.member?(types, :jail_app)
+      assert MapSet.member?(types, :jail_service)
+
+      # Host-side app/service steps absent for the contained app
+      refute Enum.any?(plan.steps, &(&1.type == :app))
+      refute Enum.any?(plan.steps, &(&1.type == :service))
+
+      jail_app_step = Enum.find(plan.steps, &(&1.type == :jail_app))
+      assert jail_app_step.args.jail == :myapp_jail
+      assert jail_app_step.args.app == :myapp
+      assert jail_app_step.args.release_path == "/staging/myapp-0.1.0.tar.gz"
+      assert jail_app_step.args.mount_in_jail == "/opt/myapp"
+
+      jail_service_step = Enum.find(plan.steps, &(&1.type == :jail_service))
+      assert jail_service_step.args.jail == :myapp_jail
+      assert "jail:app:myapp_jail:myapp" in jail_service_step.deps
+    end
+
+    test "top-level (non-contained) app still gets host-side steps" do
+      diff = [
+        %Diff{
+          resource: %Node{
+            id: :hostapp,
+            type: :app,
+            config: %{dataset: "apps/hostapp", version: "1.0.0"}
+          },
+          action: :create,
+          current: %{},
+          desired: %{},
+          changes: []
+        }
+      ]
+
+      plan = Plan.from_diff(diff, pool: "tank")
+      types = plan.steps |> Enum.map(& &1.type) |> MapSet.new()
+
+      # Host-side path (unchanged): :app + two :service steps
+      assert MapSet.member?(types, :app)
+      assert MapSet.member?(types, :service)
+      refute MapSet.member?(types, :jail_app)
+    end
+
     test "jail steps depend on dataset" do
       diff = [
         %Diff{
