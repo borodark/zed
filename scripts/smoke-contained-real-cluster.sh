@@ -102,17 +102,17 @@ verify() {
     # Requires SMOKE_COOKIE to be set in the environment invoking this verify script.
     if [ -n "${SMOKE_COOKIE:-}" ]; then
         peers=$(cd ~/zed && env SMOKE_COOKIE="${SMOKE_COOKIE}" \
-            iex --name verify@127.0.0.1 --cookie "${SMOKE_COOKIE}" -S mix -e '
-              target = :"hello_beam@10.17.89.93"
-              case :net_adm.ping(target) do
-                :pong ->
-                  peers = :rpc.call(target, Node, :list, [])
-                  IO.puts(inspect(peers))
-                other ->
-                  IO.puts("ping_failed: " <> inspect(other))
-              end
-              System.halt()
-            ' 2>&1 | tail -1)
+            elixir --erl "-name verify@127.0.0.1 -setcookie ${SMOKE_COOKIE}" \
+                   -S mix run -e '
+                     target = :"hello_beam@10.17.89.93"
+                     case :net_adm.ping(target) do
+                       :pong ->
+                         peers = :rpc.call(target, Node, :list, [])
+                         IO.puts("__PEERS__" <> inspect(peers))
+                       other ->
+                         IO.puts("__PEERS__ping_failed:" <> inspect(other))
+                     end
+                   ' 2>&1 | grep "__PEERS__" | sed "s/__PEERS__//")
 
         if echo "$peers" | grep -q "hello_beam@10.17.89.94"; then
             log "  [OK] node A sees node B in Node.list (${peers})"
