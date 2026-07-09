@@ -93,7 +93,12 @@ defmodule Zed.Examples.DemoDbJails do
 
         # initdb only if the target doesn't already have a PG_VERSION
         # file. `test -f` short-circuits so re-converge is a no-op.
-        cmd "test -f /var/db/postgres/16/data/PG_VERSION || /usr/local/etc/rc.d/postgresql initdb"
+        # Use `oneinitdb` (not `initdb`) — the `one` prefix bypasses
+        # FreeBSD's rc.d framework requirement that postgresql_enable
+        # be YES. Enable is set later by the jail_svc:start step;
+        # during setup we just want the one-shot init, without
+        # touching service-enable state.
+        cmd "test -f /var/db/postgres/16/data/PG_VERSION || service postgresql oneinitdb"
 
         # Network access from the bastille0 subnet. The append goes
         # through `cmd` (not `file append:`) because the target file
