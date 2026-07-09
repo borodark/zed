@@ -110,8 +110,30 @@ defmodule Zed.Platform.FreeBSD do
     params = config[:jail_params] || []
 
     with :ok <- ensure_bastille_jail(name, ip4, release),
-         :ok <- apply_jail_params_overlay(name, params) do
+         {:ok, params_changed} <- apply_jail_params_overlay(name, params),
+         :ok <- restart_if_params_changed(name, params_changed) do
       :ok
+    end
+  end
+
+  # FreeBSD jail params only take effect on jail start. Bastille.create
+  # auto-starts the jail with the stock jail.conf — before our overlay
+  # runs. If the overlay wrote new params, stop the jail now; the
+  # jail_create step running next will restart it fresh with the new
+  # params applied. No-op if the overlay wrote nothing (idempotent
+  # re-converge) or the jail is already stopped.
+  defp restart_if_params_changed(_name, false), do: :ok
+
+  defp restart_if_params_changed(name, true) do
+    case jail_status(name) do
+      :running ->
+        case Bastille.stop(name) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:jail_install_stop_failed, reason}}
+        end
+
+      :stopped ->
+        :ok
     end
   end
 
@@ -201,8 +223,10 @@ defmodule Zed.Platform.FreeBSD do
 
   # Append jail.conf params to bastille's per-jail file if they're not
   # already present. Grep-before-append keeps this idempotent across
-  # re-converge. Params take effect on next jail start.
-  defp apply_jail_params_overlay(_name, []), do: :ok
+  # re-converge. Params take effect on next jail start — the caller
+  # (jail_install) uses the returned `changed?` boolean to decide
+  # whether a restart is needed.
+  defp apply_jail_params_overlay(_name, []), do: {:ok, false}
 
   defp apply_jail_params_overlay(name, params) do
     conf_path = bastille_jail_conf(name)
@@ -216,11 +240,13 @@ defmodule Zed.Platform.FreeBSD do
 
         case new_lines do
           [] ->
-            :ok
+            {:ok, false}
 
           _ ->
-            case inject_before_closing_brace(contents, new_lines) do
-              {:ok, patched} -> File.write(conf_path, patched)
+            with {:ok, patched} <- inject_before_closing_brace(contents, new_lines),
+                 :ok <- File.write(conf_path, patched) do
+              {:ok, true}
+            else
               {:error, reason} -> {:error, {:jail_params_overlay_failed, reason}}
             end
         end
