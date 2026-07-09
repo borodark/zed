@@ -40,7 +40,11 @@ case "${1:-}" in
     daemon -f -p "${PIDFILE}" "$0" _run
     ;;
   _run)
-    # Long-running loop — argv[0] is $0 so rc.subr's procname check hits.
+    # Open a TCP listener on 4001 so Path C2's :jail_health :tcp probe
+    # has something to dial. `-k` keeps accepting connections after
+    # each close; the loop just keeps a long-running process alive so
+    # rc.subr's pidfile check stays green.
+    nc -k -l 4001 >/dev/null 2>&1 &
     while :; do sleep 60; done
     ;;
   stop)

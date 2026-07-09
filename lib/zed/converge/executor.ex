@@ -223,6 +223,24 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  # Probe a jail-contained app for reachability after start. Runs from
+  # the host's network namespace and dials the jail's declared IP via
+  # bastille0. Failure surfaces as :jail_health_failed with the last
+  # observed reason and the number of attempts made.
+  defp execute_step(%Step{type: :jail_health, action: :probe, args: args}, _platform) do
+    jail = to_string(args.jail)
+    app = args.app
+    type = args.probe_type
+    opts = args.opts || %{}
+    attempts = Map.get(opts, :attempts, 5)
+    interval_ms = Map.get(opts, :interval, 2000)
+
+    case retry_probe(type, opts, attempts, interval_ms, nil) do
+      :ok -> {:ok, {:jail_health_ok, jail, app, type}}
+      {:error, {n, reason}} -> {:error, {:jail_health_failed, jail, app, type, n, reason}}
+    end
+  end
+
   # Run the setup block's ops sequentially, gated on a content hash
   # so re-converge is a no-op when the block hasn't changed. Hash is
   # stored at <jails_dir>/<jail>/zed-setup.hash (plain hex).
@@ -523,6 +541,66 @@ defmodule Zed.Converge.Executor do
 
   defp maybe_chmod(_path, nil), do: :ok
   defp maybe_chmod(path, mode) when is_integer(mode), do: File.chmod(path, mode)
+
+  # --- Health probe primitives ---
+
+  defp retry_probe(_type, _opts, 0, _interval, last), do: {:error, {0, last}}
+
+  defp retry_probe(type, opts, attempts_left, interval, _prev) do
+    case probe_once(type, opts) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        if attempts_left > 1, do: :timer.sleep(interval)
+        retry_probe(type, opts, attempts_left - 1, interval, reason)
+    end
+  end
+
+  # :tcp — dial host:port, close on success. Cheapest useful signal:
+  # BEAM node's epmd (4369), a phoenix endpoint, or any listener the
+  # service brought up.
+  defp probe_once(:tcp, opts) do
+    host = opts |> Map.get(:host) |> to_charlist_if_binary()
+    port = Map.get(opts, :port)
+    timeout = Map.get(opts, :timeout, 3000)
+
+    case :gen_tcp.connect(host, port, [:binary, active: false], timeout) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        :ok
+
+      {:error, reason} ->
+        {:error, {:tcp_connect_failed, reason}}
+    end
+  end
+
+  # :http — GET the URL, compare status to opts[:expect] (default 200).
+  # Uses :httpc which needs :inets started; extra_applications lists it.
+  defp probe_once(:http, opts) do
+    url = opts |> Map.get(:url) |> to_charlist_if_binary()
+    expect = Map.get(opts, :expect, 200)
+    timeout = Map.get(opts, :timeout, 3000)
+
+    request = {url, []}
+    http_opts = [timeout: timeout, connect_timeout: timeout]
+
+    case :httpc.request(:get, request, http_opts, []) do
+      {:ok, {{_version, status, _reason}, _headers, _body}} when status == expect ->
+        :ok
+
+      {:ok, {{_v, status, _r}, _h, _b}} ->
+        {:error, {:http_status_mismatch, expect: expect, got: status}}
+
+      {:error, reason} ->
+        {:error, {:http_request_failed, reason}}
+    end
+  end
+
+  defp probe_once(other, _opts), do: {:error, {:unsupported_probe_type, other}}
+
+  defp to_charlist_if_binary(v) when is_binary(v), do: String.to_charlist(v)
+  defp to_charlist_if_binary(v), do: v
 
   # Minimal FreeBSD rc(8) script for a mix-release BEAM app running
   # inside a jail. Delegates to the release's `daemon` runner (mix

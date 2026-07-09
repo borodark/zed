@@ -123,6 +123,16 @@ verify() {
         rc=1
     fi
 
+    # Path C2: TCP health probe reachability from host to jail's IP.
+    # `nc -z` closes immediately after connect; the health probe
+    # executor uses :gen_tcp.connect which is the same semantic.
+    if nc -z -w 3 10.17.89.92 4001 2>/dev/null; then
+        log "  [OK] TCP health endpoint on 10.17.89.92:4001 responsive"
+    else
+        log "  [FAIL] TCP health endpoint not reachable"
+        rc=1
+    fi
+
     if [ $rc -eq 0 ]; then
         log "verify: PASS"
     else

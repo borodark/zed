@@ -46,6 +46,12 @@ defmodule Zed.Examples.SmokeContainedApp do
       release_path "/var/tmp/zed-smoke/hello-0.1.0.tar.gz"
       node_name :"hello@10.17.89.92"
       cookie {:env, "RELEASE_COOKIE"}
+
+      # Path C2: after the service starts, dial the jail's declared IP
+      # on port 4001. The shell stub opens a listener there so the
+      # probe passes; a failing probe would be actionable feedback
+      # that the service came up but isn't answering.
+      health :tcp, host: "10.17.89.92", port: 4001, timeout: 3000, attempts: 10, interval: 1000
     end
 
     jail :hello_jail do

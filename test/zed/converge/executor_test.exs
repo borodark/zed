@@ -442,6 +442,96 @@ defmodule Zed.Converge.ExecutorTest do
     end
   end
 
+  describe ":jail_health :probe (:tcp)" do
+    test "returns :jail_health_ok when the listener accepts a connection" do
+      # Start a one-shot tcp listener on an ephemeral port
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+      {:ok, port} = :inet.port(listen)
+
+      spawn(fn ->
+        case :gen_tcp.accept(listen, 2000) do
+          {:ok, socket} -> :gen_tcp.close(socket)
+          _ -> :ok
+        end
+      end)
+
+      step = %Step{
+        id: "jail:health:web:zedweb:0",
+        type: :jail_health,
+        action: :probe,
+        args: %{
+          jail: :web,
+          app: :zedweb,
+          probe_type: :tcp,
+          opts: %{host: "127.0.0.1", port: port, timeout: 1000, attempts: 1}
+        }
+      }
+
+      assert {:ok, [{"jail:health:web:zedweb:0", {:jail_health_ok, "web", :zedweb, :tcp}}]} =
+               run_step(step)
+
+      :gen_tcp.close(listen)
+    end
+
+    test "returns :jail_health_failed on closed port with attempt count" do
+      # Get an available port then close it — connect will econnrefused
+      {:ok, s} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+      {:ok, port} = :inet.port(s)
+      :gen_tcp.close(s)
+
+      step = %Step{
+        id: "jail:health:web:zedweb:0",
+        type: :jail_health,
+        action: :probe,
+        args: %{
+          jail: :web,
+          app: :zedweb,
+          probe_type: :tcp,
+          opts: %{host: "127.0.0.1", port: port, timeout: 200, attempts: 2, interval: 50}
+        }
+      }
+
+      assert {:error, _step,
+              {:jail_health_failed, "web", :zedweb, :tcp, 0,
+               {:tcp_connect_failed, :econnrefused}}, _} = run_step(step)
+    end
+  end
+
+  describe ":jail_health :probe (:http)" do
+    setup do
+      :inets.start()
+      :ok
+    end
+
+    test "returns :jail_health_failed when the server refuses connections" do
+      # Reserve then release a port so the URL points at nothing
+      {:ok, s} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+      {:ok, port} = :inet.port(s)
+      :gen_tcp.close(s)
+
+      step = %Step{
+        id: "jail:health:web:zedweb:0",
+        type: :jail_health,
+        action: :probe,
+        args: %{
+          jail: :web,
+          app: :zedweb,
+          probe_type: :http,
+          opts: %{
+            url: "http://127.0.0.1:#{port}/",
+            expect: 200,
+            timeout: 500,
+            attempts: 1
+          }
+        }
+      }
+
+      assert {:error, _step,
+              {:jail_health_failed, "web", :zedweb, :http, 0,
+               {:http_request_failed, _}}, _} = run_step(step)
+    end
+  end
+
   describe ":jail_setup :run" do
     setup do
       tmp = System.tmp_dir!() |> Path.join("zed-jail-setup-test-#{System.unique_integer([:positive])}")

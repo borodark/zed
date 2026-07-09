@@ -115,13 +115,16 @@ defmodule Zed.Converge.Plan do
 
       jail_id ->
         # Jail-contained app: release into jail rootfs, rc.d inside
-        # jail, service start via the Path B jail_svc plumbing. The
-        # host-side deploy + rc.d + restart steps are skipped.
+        # jail, service start via the Path B jail_svc plumbing, then
+        # any declared health probes gate confirmation of a healthy
+        # deploy. The host-side deploy + rc.d + restart steps are
+        # skipped.
         [
           build_jail_app_deploy_step(app_id, jail_id, node),
           build_jail_service_install_step(app_id, jail_id, service_name, config),
           build_jail_app_svc_step(app_id, jail_id, service_name)
         ]
+        |> Kernel.++(build_jail_health_steps(app_id, jail_id, service_name, config))
     end
   end
 
@@ -371,6 +374,33 @@ defmodule Zed.Converge.Plan do
     }
   end
 
+  # One :jail_health :probe step per health decl on the app config.
+  # Health checks run AFTER :jail_svc :start so a failed probe is
+  # actionable feedback that the service came up but isn't answering.
+  # Probes on contained apps go through the host's network to the
+  # jail's IP — the jail's own loopback isn't reachable from outside,
+  # but bastille0-attached jail IPs are.
+  defp build_jail_health_steps(app_id, jail_id, service_name, config) do
+    checks = config[:health] || []
+
+    checks
+    |> Enum.with_index()
+    |> Enum.map(fn {{type, opts}, idx} ->
+      %Step{
+        id: "jail:health:#{jail_id}:#{app_id}:#{idx}",
+        type: :jail_health,
+        action: :probe,
+        args: %{
+          jail: jail_id,
+          app: app_id,
+          probe_type: type,
+          opts: opts
+        },
+        deps: ["jail:svc:#{jail_id}:#{service_name}"]
+      }
+    end)
+  end
+
   # Reuse the Path B :jail_svc :start executor clause — sysrc enable
   # + service start inside the jail via bastille cmd.
   defp build_jail_app_svc_step(app_id, jail_id, service_name) do
@@ -552,6 +582,7 @@ defmodule Zed.Converge.Plan do
         app: 6,
         file: 6,
         jail_svc: 7,
+        jail_health: 8,
         service: 8,
         service_run: 9
       }
@@ -561,6 +592,7 @@ defmodule Zed.Converge.Plan do
         deploy: 0,
         create: 1,
         start: 2,
+        probe: 2,
         restart: 3,
         mount: 1,
         write: 1
