@@ -169,16 +169,64 @@ defmodule Zed.Converge.Executor do
     else
       host_mountpoint = "#{Bastille.jails_dir()}/#{jail}/root#{args.mount_in_jail}"
 
-      case File.mkdir_p(host_mountpoint) do
-        :ok ->
-          case Release.deploy(release_path, version, host_mountpoint) do
-            {:ok, version_dir} -> {:ok, {:jail_app_deployed, jail, args.app, version_dir}}
-            {:error, reason} -> {:error, {:jail_app_deploy_failed, jail, args.app, reason}}
-          end
+      with :ok <- File.mkdir_p(host_mountpoint),
+           {:ok, version_dir} <- Release.deploy(release_path, version, host_mountpoint),
+           :ok <- write_jail_env_file(jail, args) do
+        {:ok, {:jail_app_deployed, jail, args.app, version_dir}}
+      else
+        {:error, {tag, _, _} = reason} when tag in [:jail_env_file_failed] ->
+          {:error, reason}
 
         {:error, reason} ->
           {:error, {:jail_app_deploy_failed, jail, args.app, reason}}
       end
+    end
+  end
+
+  # Compose RELEASE_COOKIE + RELEASE_NODE into an env file inside the
+  # jail's rootfs. The rc.d script Zed writes for a contained app
+  # sources this file before invoking the release, so mix releases
+  # boot with a distributed node name and shared cookie without any
+  # runtime magic.
+  #
+  # No-op when either cookie or node_name is nil — the DSL allows
+  # host-side apps to omit these; contained apps typically have both
+  # (plan defaults env_file to /var/db/zed/<app>.env for contained
+  # apps and the DSL validator requires a non-inline cookie shape).
+  defp write_jail_env_file(_jail, %{cookie: nil}), do: :ok
+  defp write_jail_env_file(_jail, %{node_name: nil}), do: :ok
+
+  defp write_jail_env_file(jail, args) do
+    env_file = args[:env_file]
+
+    if is_nil(env_file) do
+      :ok
+    else
+      case Zed.Beam.Env.resolve_cookie(args.cookie) do
+        {:ok, cookie_value} ->
+          content = Zed.Beam.Env.compose_env_file(args.node_name, cookie_value)
+          host_path = "#{Bastille.jails_dir()}/#{jail}/root#{env_file}"
+          write_env_file_idempotent(jail, env_file, host_path, content)
+
+        {:error, reason} ->
+          {:error, {:jail_env_file_failed, jail, {:cookie_resolve_failed, reason}}}
+      end
+    end
+  end
+
+  defp write_env_file_idempotent(jail, env_file, host_path, content) do
+    case File.read(host_path) do
+      {:ok, ^content} ->
+        :ok
+
+      _ ->
+        with :ok <- File.mkdir_p(Path.dirname(host_path)),
+             :ok <- File.write(host_path, content),
+             :ok <- File.chmod(host_path, 0o400) do
+          :ok
+        else
+          {:error, reason} -> {:error, {:jail_env_file_failed, jail, {env_file, reason}}}
+        end
     end
   end
 
@@ -597,7 +645,69 @@ defmodule Zed.Converge.Executor do
     end
   end
 
+  # :beam_ping — distributed-Erlang connect probe. Sets the cookie
+  # against the target node (Erlang looks up cookie by target-node
+  # atom) and calls :net_adm.ping/1. Success = :pong, failure = :pang.
+  #
+  # Requires the probing BEAM to be distributed. If it isn't, we
+  # transiently start distribution with a random short-name so we can
+  # send disterl traffic; this side effect only affects the current
+  # BEAM run.
+  defp probe_once(:beam_ping, opts) do
+    node = Map.get(opts, :node)
+    cookie_ref = Map.get(opts, :cookie)
+
+    with :ok <- ensure_distribution_started(),
+         {:ok, cookie} <- resolve_probe_cookie(cookie_ref),
+         :ok <- set_cookie_if_present(node, cookie) do
+      case :net_adm.ping(node) do
+        :pong -> :ok
+        :pang -> {:error, {:beam_ping_pang, node}}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp probe_once(other, _opts), do: {:error, {:unsupported_probe_type, other}}
+
+  defp ensure_distribution_started do
+    case Node.self() do
+      :nonode@nohost ->
+        # Random short-name so we don't collide with the host's own
+        # distribution if one is running.
+        name = :"zed_probe_#{System.unique_integer([:positive])}"
+
+        case Node.start(name, :shortnames) do
+          {:ok, _} -> :ok
+          {:error, {:already_started, _}} -> :ok
+          {:error, reason} -> {:error, {:disterl_start_failed, reason}}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Accept either an already-resolved binary or a Zed.Beam.Env
+  # cookie ref. Same shapes as :jail_app :deploy so operators pass
+  # the same value in both places.
+  defp resolve_probe_cookie(nil), do: {:ok, nil}
+  defp resolve_probe_cookie(bin) when is_binary(bin), do: {:ok, bin}
+
+  defp resolve_probe_cookie(ref) do
+    case Zed.Beam.Env.resolve_cookie(ref) do
+      {:ok, v} -> {:ok, v}
+      {:error, reason} -> {:error, {:probe_cookie_resolve_failed, reason}}
+    end
+  end
+
+  defp set_cookie_if_present(_node, nil), do: :ok
+
+  defp set_cookie_if_present(node, cookie) when is_binary(cookie) do
+    Node.set_cookie(node, String.to_atom(cookie))
+    :ok
+  end
 
   defp to_charlist_if_binary(v) when is_binary(v), do: String.to_charlist(v)
   defp to_charlist_if_binary(v), do: v

@@ -331,6 +331,11 @@ defmodule Zed.Converge.Plan do
   # arg is the host path to the tarball; executor reads it there and
   # writes into the jail rootfs from the host side (nullfs-friendly).
   defp build_jail_app_deploy_step(app_id, jail_id, %{config: config}) do
+    # Default env_file to /var/db/zed/<app>.env inside the jail. The
+    # executor writes RELEASE_COOKIE + RELEASE_NODE here after tarball
+    # extraction, and the rc.d script sources it before invoking the
+    # release. Operators can override with `env_file "/other/path"`
+    # in the app block.
     %Step{
       id: "jail:app:#{jail_id}:#{app_id}",
       type: :jail_app,
@@ -343,7 +348,7 @@ defmodule Zed.Converge.Plan do
         mount_in_jail: config[:mount_in_jail] || "/opt/#{app_id}",
         node_name: config[:node_name],
         cookie: config[:cookie],
-        env_file: config[:env_file]
+        env_file: config[:env_file] || "/var/db/zed/#{app_id}.env"
       },
       deps: ["jail:create:#{jail_id}"]
     }
@@ -368,7 +373,9 @@ defmodule Zed.Converge.Plan do
         service: service_name,
         mount_in_jail: config[:mount_in_jail] || "/opt/#{app_id}",
         user: config[:user],
-        env_file: config[:env_file]
+        # Same default as build_jail_app_deploy_step so the rc.d
+        # script sources the env file the deploy step wrote.
+        env_file: config[:env_file] || "/var/db/zed/#{app_id}.env"
       },
       deps: ["jail:app:#{jail_id}:#{app_id}"]
     }

@@ -371,6 +371,111 @@ defmodule Zed.Converge.ExecutorTest do
       # Symlink target should exist and contain our fake bin/myapp
       assert File.exists?(Path.join([current, "bin", "myapp"]))
     end
+
+    test "writes env file inside jail rootfs when cookie + node_name set",
+         %{jails_dir: dir} do
+      # Prep tarball
+      staging = Path.join(dir, "staging-envtest-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(staging, "bin"))
+      File.write!(Path.join([staging, "bin", "myapp"]), "#!/bin/sh\nexit 0\n")
+      tar_path = Path.join(dir, "envtest-0.1.0.tar.gz")
+      {_, 0} = System.cmd("tar", ["czf", tar_path, "-C", staging, "."], stderr_to_stdout: true)
+
+      System.put_env("ZED_TEST_ENV_COOKIE", "cookie_abc")
+
+      step = %Step{
+        id: "jail:app:web:myapp",
+        type: :jail_app,
+        action: :deploy,
+        args: %{
+          jail: :web,
+          app: :myapp,
+          version: "0.1.0",
+          release_path: tar_path,
+          mount_in_jail: "/opt/myapp",
+          node_name: :"myapp@10.0.0.10",
+          cookie: {:env, "ZED_TEST_ENV_COOKIE"},
+          env_file: "/var/db/zed/myapp.env"
+        }
+      }
+
+      assert {:ok, [{"jail:app:web:myapp", {:jail_app_deployed, _, _, _}}]} =
+               run_step(step)
+
+      env_path = Path.join([dir, "web", "root", "var", "db", "zed", "myapp.env"])
+      assert File.exists?(env_path)
+      content = File.read!(env_path)
+      assert content =~ ~s(RELEASE_NODE="myapp@10.0.0.10")
+      assert content =~ ~s(RELEASE_COOKIE="cookie_abc")
+
+      # Mode 0o400 (only owner can read; env file typically holds a secret)
+      stat = File.stat!(env_path)
+      assert Bitwise.band(stat.mode, 0o777) == 0o400
+
+      System.delete_env("ZED_TEST_ENV_COOKIE")
+    end
+
+    test "surfaces :jail_env_file_failed on unset env var", %{jails_dir: dir} do
+      staging = Path.join(dir, "staging-envfail-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(staging, "bin"))
+      File.write!(Path.join([staging, "bin", "myapp"]), "#!/bin/sh\nexit 0\n")
+      tar_path = Path.join(dir, "envfail-0.1.0.tar.gz")
+      {_, 0} = System.cmd("tar", ["czf", tar_path, "-C", staging, "."], stderr_to_stdout: true)
+
+      System.delete_env("ZED_TEST_MISSING_COOKIE")
+
+      step = %Step{
+        id: "jail:app:web:myapp",
+        type: :jail_app,
+        action: :deploy,
+        args: %{
+          jail: :web,
+          app: :myapp,
+          version: "0.1.0",
+          release_path: tar_path,
+          mount_in_jail: "/opt/myapp",
+          node_name: :"myapp@10.0.0.10",
+          cookie: {:env, "ZED_TEST_MISSING_COOKIE"},
+          env_file: "/var/db/zed/myapp.env"
+        }
+      }
+
+      assert {:error, _step,
+              {:jail_env_file_failed, "web",
+               {:cookie_resolve_failed, {:env_var_unset, "ZED_TEST_MISSING_COOKIE"}}},
+              _} = run_step(step)
+    end
+
+    test "env file write skipped when cookie or node_name nil", %{jails_dir: dir} do
+      staging = Path.join(dir, "staging-noenv-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(staging, "bin"))
+      File.write!(Path.join([staging, "bin", "myapp"]), "#!/bin/sh\nexit 0\n")
+      tar_path = Path.join(dir, "noenv-0.1.0.tar.gz")
+      {_, 0} = System.cmd("tar", ["czf", tar_path, "-C", staging, "."], stderr_to_stdout: true)
+
+      step = %Step{
+        id: "jail:app:web:myapp",
+        type: :jail_app,
+        action: :deploy,
+        args: %{
+          jail: :web,
+          app: :myapp,
+          version: "0.1.0",
+          release_path: tar_path,
+          mount_in_jail: "/opt/myapp",
+          node_name: nil,
+          cookie: nil,
+          env_file: "/var/db/zed/myapp.env"
+        }
+      }
+
+      assert {:ok, [{"jail:app:web:myapp", {:jail_app_deployed, _, _, _}}]} =
+               run_step(step)
+
+      # No env file should have been written
+      env_path = Path.join([dir, "web", "root", "var", "db", "zed", "myapp.env"])
+      refute File.exists?(env_path)
+    end
   end
 
   describe ":jail_service :install" do
@@ -494,6 +599,67 @@ defmodule Zed.Converge.ExecutorTest do
       assert {:error, _step,
               {:jail_health_failed, "web", :zedweb, :tcp, 0,
                {:tcp_connect_failed, :econnrefused}}, _} = run_step(step)
+    end
+  end
+
+  describe ":jail_health :probe (:beam_ping)" do
+    test "returns :jail_health_ok pinging Node.self after distribution starts" do
+      # Force distribution up under a known name so we can ping ourselves.
+      # The executor's ensure_distribution_started/0 also handles this
+      # transiently — this test just makes the target atom stable.
+      case Node.self() do
+        :nonode@nohost ->
+          Node.start(:"zed_test_probe_#{System.unique_integer([:positive])}", :shortnames)
+
+        _ ->
+          :ok
+      end
+
+      target = Node.self()
+
+      step = %Step{
+        id: "jail:health:web:zedweb:0",
+        type: :jail_health,
+        action: :probe,
+        args: %{
+          jail: :web,
+          app: :zedweb,
+          probe_type: :beam_ping,
+          opts: %{node: target, timeout: 1000, attempts: 1}
+        }
+      }
+
+      assert {:ok, [{"jail:health:web:zedweb:0", {:jail_health_ok, "web", :zedweb, :beam_ping}}]} =
+               run_step(step)
+    end
+
+    test "returns :jail_health_failed :beam_ping_pang on unreachable node" do
+      # Nonexistent short-name node — ping returns :pang immediately
+      target = :"nonexistent_#{System.unique_integer([:positive])}@127.0.0.1"
+
+      case Node.self() do
+        :nonode@nohost ->
+          Node.start(:"zed_test_probe_#{System.unique_integer([:positive])}", :shortnames)
+
+        _ ->
+          :ok
+      end
+
+      step = %Step{
+        id: "jail:health:web:zedweb:0",
+        type: :jail_health,
+        action: :probe,
+        args: %{
+          jail: :web,
+          app: :zedweb,
+          probe_type: :beam_ping,
+          opts: %{node: target, timeout: 200, attempts: 1}
+        }
+      }
+
+      assert {:error, _step,
+              {:jail_health_failed, "web", :zedweb, :beam_ping, 0,
+               {:beam_ping_pang, ^target}}, _} = run_step(step)
     end
   end
 
