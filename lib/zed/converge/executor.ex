@@ -523,11 +523,21 @@ defmodule Zed.Converge.Executor do
   # inside a jail. Delegates to the release's `daemon` runner (mix
   # release's built-in). Env file is sourced if present so
   # RELEASE_COOKIE / RELEASE_NODE flow through.
+  #
+  # `user` is optional — when nil, no _user directive is emitted and
+  # rc.subr runs the command as root. Per-user separation inside a
+  # jail is opt-in via DSL; the security boundary is the jail itself.
   defp render_jail_rc_script(service, mount_in_jail, user, env_file) do
     env_line =
       case env_file do
         nil -> ""
         path -> "\n[ -r #{path} ] && . #{path}"
+      end
+
+    user_line =
+      case user do
+        nil -> ""
+        u -> "\n: ${#{service}_user:=\"#{u}\"}"
       end
 
     """
@@ -545,8 +555,7 @@ defmodule Zed.Converge.Executor do
     rcvar="#{service}_enable"
     load_rc_config $name
 
-    : ${#{service}_enable:="NO"}
-    : ${#{service}_user:="#{user}"}
+    : ${#{service}_enable:="NO"}#{user_line}
 
     command="#{mount_in_jail}/current/bin/#{service}"
     command_args="daemon"

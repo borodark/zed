@@ -349,6 +349,13 @@ defmodule Zed.Converge.Plan do
   # Write an rc.d script for the app inside the jail rootfs. Path B's
   # :jail_svc :start step then enables + starts it.
   defp build_jail_service_install_step(app_id, jail_id, service_name, config) do
+    # `user` is NOT defaulted to the app id. If unset, the executor
+    # omits the _user directive from the rc.d script and rc.subr runs
+    # the command as root. Jail isolation is the security boundary
+    # inside a jail; per-user separation is opt-in via the DSL. A
+    # default of `<app_id>` broke the smoke because the app's stub
+    # tarball didn't install a matching system user, and rc.subr's
+    # `su -m <app>` failed with "unknown login".
     %Step{
       id: "jail:service:#{jail_id}:#{app_id}",
       type: :jail_service,
@@ -357,7 +364,7 @@ defmodule Zed.Converge.Plan do
         jail: jail_id,
         service: service_name,
         mount_in_jail: config[:mount_in_jail] || "/opt/#{app_id}",
-        user: config[:user] || to_string(app_id),
+        user: config[:user],
         env_file: config[:env_file]
       },
       deps: ["jail:app:#{jail_id}:#{app_id}"]
