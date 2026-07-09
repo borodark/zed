@@ -76,7 +76,16 @@ defmodule Zed.Beam.Env do
   files must be POSIX-shell parseable.
 
       iex> Zed.Beam.Env.compose_env_file(:"foo@10.0.0.1", "secret")
-      "export RELEASE_NODE=\\"foo@10.0.0.1\\"\\nexport RELEASE_COOKIE=\\"secret\\"\\n"
+      "export RELEASE_DISTRIBUTION=name\\nexport RELEASE_NODE=\\"foo@10.0.0.1\\"\\nexport RELEASE_COOKIE=\\"secret\\"\\n"
+
+  Three variables:
+    * `RELEASE_DISTRIBUTION` — required by mix release to enable
+      distribution. Set to `name` when the node atom's hostname
+      contains a dot (FQDN or IP), `sname` otherwise. Without this,
+      mix release starts non-distributed and the net_kernel bails
+      with `{'EXIT', nodistribution}`.
+    * `RELEASE_NODE` — the target node atom, quoted for POSIX shell.
+    * `RELEASE_COOKIE` — the resolved cookie, quoted for POSIX shell.
 
   The `export` prefix is essential: without it, sourcing the file
   from the rc.d script sets the variables only in the sourcing
@@ -87,6 +96,24 @@ defmodule Zed.Beam.Env do
   @spec compose_env_file(node :: atom, cookie :: binary) :: binary
   def compose_env_file(node_name, cookie)
       when is_atom(node_name) and is_binary(cookie) do
-    ~s(export RELEASE_NODE="#{node_name}"\nexport RELEASE_COOKIE="#{cookie}"\n)
+    distribution = distribution_mode(node_name)
+
+    """
+    export RELEASE_DISTRIBUTION=#{distribution}
+    export RELEASE_NODE="#{node_name}"
+    export RELEASE_COOKIE="#{cookie}"
+    """
+  end
+
+  # `name` when the hostname contains a dot — matches Erlang's long-
+  # names mode. `sname` for bare hostnames.
+  defp distribution_mode(node_name) do
+    case node_name |> Atom.to_string() |> String.split("@", parts: 2) do
+      [_name, host] ->
+        if String.contains?(host, "."), do: "name", else: "sname"
+
+      _ ->
+        "sname"
+    end
   end
 end

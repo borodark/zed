@@ -54,11 +54,17 @@ defmodule Zed.Beam.EnvTest do
   end
 
   describe "compose_env_file/2" do
-    test "returns POSIX-shell quoted and exported RELEASE_NODE + RELEASE_COOKIE" do
+    test "returns exported RELEASE_DISTRIBUTION + RELEASE_NODE + RELEASE_COOKIE for FQDN/IP nodes" do
       out = Env.compose_env_file(:"foo@10.0.0.1", "supersecret")
 
-      assert out ==
-               ~s(export RELEASE_NODE="foo@10.0.0.1"\nexport RELEASE_COOKIE="supersecret"\n)
+      assert out =~ "export RELEASE_DISTRIBUTION=name\n"
+      assert out =~ ~s(export RELEASE_NODE="foo@10.0.0.1"\n)
+      assert out =~ ~s(export RELEASE_COOKIE="supersecret"\n)
+    end
+
+    test "uses sname distribution mode for bare hostnames" do
+      out = Env.compose_env_file(:"foo@bare", "abc")
+      assert out =~ "export RELEASE_DISTRIBUTION=sname\n"
     end
   end
 end
