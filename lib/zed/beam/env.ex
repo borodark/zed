@@ -39,8 +39,10 @@ defmodule Zed.Beam.Env do
 
   For `{:file, path}`, reads the file and trims one trailing newline.
   """
-  @spec resolve_cookie(cookie_ref) :: {:ok, binary} | {:error, term}
-  def resolve_cookie({:env, var}) when is_binary(var) do
+  @spec resolve_cookie(cookie_ref, keyword) :: {:ok, binary} | {:error, term}
+  def resolve_cookie(ref, opts \\ [])
+
+  def resolve_cookie({:env, var}, _opts) when is_binary(var) do
     case System.get_env(var) do
       nil -> {:error, {:env_var_unset, var}}
       "" -> {:error, {:env_var_empty, var}}
@@ -48,24 +50,37 @@ defmodule Zed.Beam.Env do
     end
   end
 
-  def resolve_cookie({:file, path}) when is_binary(path) do
+  def resolve_cookie({:file, path}, _opts) when is_binary(path) do
     case File.read(path) do
       {:ok, contents} -> {:ok, String.trim_trailing(contents, "\n")}
       {:error, reason} -> {:error, {:cookie_file_read_failed, path, reason}}
     end
   end
 
-  def resolve_cookie({:secret, slot}) when is_atom(slot) do
-    {:error, {:secret_ref_not_yet_supported, slot}}
+  # Path C6: {:secret, slot[, field]} resolves against the Zed
+  # metadata dataset stamped by Bootstrap. Caller must pass
+  # `dataset:` opt with the base dataset name (e.g. "mac_zroot/zed").
+  # Falls closed — no dataset means no resolution.
+  def resolve_cookie({:secret, slot, field}, opts) when is_atom(slot) and is_atom(field) do
+    case Keyword.fetch(opts, :dataset) do
+      {:ok, dataset} when is_binary(dataset) ->
+        case Zed.Secrets.Resolve.resolve(dataset, slot, field) do
+          {:ok, bytes} -> {:ok, String.trim_trailing(bytes, "\n")}
+          {:error, reason} -> {:error, reason}
+        end
+
+      _ ->
+        {:error, {:secret_dataset_not_provided, slot, field}}
+    end
   end
 
-  def resolve_cookie({:secret, slot, field}) when is_atom(slot) and is_atom(field) do
-    {:error, {:secret_ref_not_yet_supported, slot, field}}
+  def resolve_cookie({:secret, slot}, opts) when is_atom(slot) do
+    resolve_cookie({:secret, slot, :value}, opts)
   end
 
-  def resolve_cookie(bin) when is_binary(bin), do: {:ok, bin}
+  def resolve_cookie(bin, _opts) when is_binary(bin), do: {:ok, bin}
 
-  def resolve_cookie(other), do: {:error, {:unsupported_cookie_ref, other}}
+  def resolve_cookie(other, _opts), do: {:error, {:unsupported_cookie_ref, other}}
 
   @doc """
   Compose the env file contents for a jail-contained BEAM release.

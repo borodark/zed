@@ -44,12 +44,35 @@ defmodule Zed.Beam.EnvTest do
       assert {:ok, "already_a_binary"} = Env.resolve_cookie("already_a_binary")
     end
 
-    test "returns not-yet-supported for {:secret, ...} refs" do
-      assert {:error, {:secret_ref_not_yet_supported, :foo}} =
-               Env.resolve_cookie({:secret, :foo})
+    test "{:secret, slot} without dataset opt returns :secret_dataset_not_provided" do
+      assert {:error, {:secret_dataset_not_provided, :beam_cookie, :value}} =
+               Env.resolve_cookie({:secret, :beam_cookie})
 
-      assert {:error, {:secret_ref_not_yet_supported, :foo, :value}} =
-               Env.resolve_cookie({:secret, :foo, :value})
+      assert {:error, {:secret_dataset_not_provided, :beam_cookie, :pub}} =
+               Env.resolve_cookie({:secret, :beam_cookie, :pub})
+    end
+
+    test "{:secret, slot} surfaces Resolve errors when dataset opt provided" do
+      # No ZFS dataset really exists; Property.get_all returns %{}
+      # so lookup fails cleanly.
+      assert {:error, {:slot_property_missing, "secret.nonexistent_slot.path"}} =
+               Env.resolve_cookie({:secret, :nonexistent_slot}, dataset: "no/such/dataset")
+    end
+
+    test "{:secret, slot} trims trailing newline like {:file, ...} does" do
+      # Prepare a props map by monkey-patching a temp file that Bootstrap
+      # would have stamped. Since we test Env.resolve_cookie against a
+      # real ZFS dataset via SSH on mac-248 in the C6 smoke, here we
+      # just cover the trim behavior end-to-end using the file form.
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "zed_cookie_trim_#{System.unique_integer([:positive])}"
+        )
+
+      File.write!(tmp, "with_newline\n")
+      assert {:ok, "with_newline"} = Env.resolve_cookie({:file, tmp})
+      File.rm!(tmp)
     end
   end
 

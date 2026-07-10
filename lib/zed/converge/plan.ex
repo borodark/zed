@@ -120,7 +120,7 @@ defmodule Zed.Converge.Plan do
         # deploy. The host-side deploy + rc.d + restart steps are
         # skipped.
         [
-          build_jail_app_deploy_step(app_id, jail_id, node),
+          build_jail_app_deploy_step(app_id, jail_id, node, pool),
           build_jail_service_install_step(app_id, jail_id, service_name, config),
           build_jail_app_svc_step(app_id, jail_id, service_name)
         ]
@@ -330,7 +330,7 @@ defmodule Zed.Converge.Plan do
   # and symlink `current` to the fresh version. The `release_path`
   # arg is the host path to the tarball; executor reads it there and
   # writes into the jail rootfs from the host side (nullfs-friendly).
-  defp build_jail_app_deploy_step(app_id, jail_id, %{config: config}) do
+  defp build_jail_app_deploy_step(app_id, jail_id, %{config: config}, pool) do
     # Default env_file to /var/db/zed/<app>.env inside the jail. The
     # executor writes RELEASE_COOKIE + RELEASE_NODE here after tarball
     # extraction, and the rc.d script sources it before invoking the
@@ -352,7 +352,13 @@ defmodule Zed.Converge.Plan do
         # Optional per-app env vars merged after the RELEASE_* baseline.
         # Empty map when unset (executor's write_jail_env_file handles
         # empty extra_env cleanly via compose_env_file/3's default).
-        extra_env: config[:env] || %{}
+        extra_env: config[:env] || %{},
+        # Path C6: dataset context for {:secret, :slot} cookie
+        # resolution. Zed's convention is `<pool>/zed` for the
+        # metadata dataset (see Zed.Bootstrap.init). Nil when the
+        # deploy has no pool — resolve_cookie's :secret path bails
+        # cleanly with :secret_dataset_not_provided in that case.
+        zed_dataset: if(is_nil(pool), do: nil, else: "#{pool}/zed")
       },
       deps: ["jail:create:#{jail_id}"]
     }

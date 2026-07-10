@@ -202,7 +202,18 @@ defmodule Zed.Converge.Executor do
     if is_nil(env_file) do
       :ok
     else
-      case Zed.Beam.Env.resolve_cookie(args.cookie) do
+      # Path C6: thread the Zed metadata dataset through so
+      # `{:secret, :slot}` cookie refs can resolve against ZFS
+      # properties + encrypted secrets dataset. Nil is fine — env/
+      # file/binary refs don't need the dataset; only :secret does,
+      # and it'll fail closed with :secret_dataset_not_provided.
+      resolve_opts =
+        case args[:zed_dataset] do
+          nil -> []
+          dataset -> [dataset: dataset]
+        end
+
+      case Zed.Beam.Env.resolve_cookie(args.cookie, resolve_opts) do
         {:ok, cookie_value} ->
           extra_env = args[:extra_env] || %{}
           content = Zed.Beam.Env.compose_env_file(args.node_name, cookie_value, extra_env)
