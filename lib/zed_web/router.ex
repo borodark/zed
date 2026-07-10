@@ -15,6 +15,15 @@ defmodule ZedWeb.Router do
     plug :fetch_session
   end
 
+  # Health endpoint — no pipeline, no session, no forgery protection.
+  # Consumed by Zed's own `health :http` probe against a zedweb
+  # deployment (Path C7's SmokeZedweb) and by any external probe
+  # (uptime monitor, load balancer). Returns 200 as soon as the
+  # endpoint accepts requests — no dependency check yet.
+  scope "/" do
+    get "/health", ZedWeb.HealthController, :check
+  end
+
   pipeline :require_admin do
     plug ZedWeb.Plugs.RequireAdmin
   end
