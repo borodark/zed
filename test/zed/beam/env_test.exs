@@ -112,4 +112,93 @@ defmodule Zed.Beam.EnvTest do
       assert baseline == with_empty
     end
   end
+
+  describe "resolve_env_value/2" do
+    test "resolves {:env, VAR}" do
+      System.put_env("ZED_TEST_ENV_VAL", "hello")
+      assert {:ok, "hello"} = Env.resolve_env_value({:env, "ZED_TEST_ENV_VAL"})
+      System.delete_env("ZED_TEST_ENV_VAL")
+    end
+
+    test "returns :env_var_unset when the env var is missing" do
+      System.delete_env("ZED_TEST_ENV_MISSING")
+      assert {:error, {:env_var_unset, "ZED_TEST_ENV_MISSING"}} =
+               Env.resolve_env_value({:env, "ZED_TEST_ENV_MISSING"})
+    end
+
+    test "resolves {:file, path} trimming one trailing newline" do
+      path = Path.join(System.tmp_dir!(), "zed_env_val_#{System.unique_integer([:positive])}")
+      File.write!(path, "diskval\n")
+      assert {:ok, "diskval"} = Env.resolve_env_value({:file, path})
+      File.rm!(path)
+    end
+
+    test "surfaces file read errors" do
+      path = Path.join(System.tmp_dir!(), "zed_env_nope_#{System.unique_integer([:positive])}")
+      assert {:error, {:env_file_read_failed, ^path, :enoent}} =
+               Env.resolve_env_value({:file, path})
+    end
+
+    test "passes through a bare binary" do
+      assert {:ok, "already_a_binary"} = Env.resolve_env_value("already_a_binary")
+    end
+
+    test "{:secret, slot} without dataset opt returns :secret_dataset_not_provided" do
+      assert {:error, {:secret_dataset_not_provided, :beam_cookie, :value}} =
+               Env.resolve_env_value({:secret, :beam_cookie})
+    end
+
+    test "{:secret, slot} surfaces Resolve errors when dataset opt provided" do
+      assert {:error, {:slot_property_missing, "secret.nonexistent_slot.path"}} =
+               Env.resolve_env_value({:secret, :nonexistent_slot}, dataset: "no/such/dataset")
+    end
+
+    test "unknown ref shape returns :unsupported_env_ref" do
+      assert {:error, {:unsupported_env_ref, {:weird, :ref}}} =
+               Env.resolve_env_value({:weird, :ref})
+    end
+  end
+
+  describe "compose_env_file/4 (resolving variant)" do
+    test "resolves each extra_env value and interpolates the result" do
+      System.put_env("ZED_TEST_SKB", "compiled_key_base")
+
+      extra = %{
+        "ZED_SERVE" => "1",
+        "ZED_SECRET_KEY_BASE" => {:env, "ZED_TEST_SKB"}
+      }
+
+      assert {:ok, out} = Env.compose_env_file(:"foo@10.0.0.1", "cookie123", extra, [])
+
+      assert out =~ ~s(export ZED_SERVE="1"\n)
+      assert out =~ ~s(export ZED_SECRET_KEY_BASE="compiled_key_base"\n)
+      assert out =~ ~s(export RELEASE_COOKIE="cookie123"\n)
+
+      System.delete_env("ZED_TEST_SKB")
+    end
+
+    test "surfaces the first failing key with a stable error shape" do
+      System.delete_env("ZED_TEST_MISSING_ENV_KEY")
+
+      extra = %{
+        "GOOD" => "ok",
+        "BAD" => {:env, "ZED_TEST_MISSING_ENV_KEY"}
+      }
+
+      assert {:error, {:env_key, "BAD", {:env_var_unset, "ZED_TEST_MISSING_ENV_KEY"}}} =
+               Env.compose_env_file(:"foo@10.0.0.1", "cookie", extra, [])
+    end
+
+    test "threads dataset: opt through to {:secret, ...} resolution" do
+      extra = %{"ZED_SECRET" => {:secret, :nonexistent_slot}}
+
+      assert {:error, {:env_key, "ZED_SECRET", {:slot_property_missing, _}}} =
+               Env.compose_env_file(:"foo@10.0.0.1", "cookie", extra, dataset: "no/such")
+    end
+
+    test "empty extra_env matches baseline output" do
+      assert {:ok, baseline} = Env.compose_env_file(:"foo@10.0.0.1", "cookie", %{}, [])
+      assert baseline == Env.compose_env_file(:"foo@10.0.0.1", "cookie")
+    end
+  end
 end

@@ -83,6 +83,56 @@ defmodule Zed.Beam.Env do
   def resolve_cookie(other, _opts), do: {:error, {:unsupported_cookie_ref, other}}
 
   @doc """
+  Resolve an env-value reference for `extra_env`. Same shape family as
+  `resolve_cookie/2` — accepts a binary passthrough, `{:env, "VAR"}`,
+  `{:file, path}`, or `{:secret, slot[, field]}`. The `dataset:` opt
+  is required only for the `:secret` form.
+
+  Used by `compose_env_file/3` to walk the operator's `env %{...}` map
+  at converge time. Any `{:error, _}` propagates out unchanged so the
+  executor can log a coherent failure alongside the cookie's own
+  resolution errors.
+  """
+  @spec resolve_env_value(cookie_ref, keyword) :: {:ok, binary} | {:error, term}
+  def resolve_env_value(ref, opts \\ [])
+
+  def resolve_env_value({:env, var}, _opts) when is_binary(var) do
+    case System.get_env(var) do
+      nil -> {:error, {:env_var_unset, var}}
+      "" -> {:error, {:env_var_empty, var}}
+      value -> {:ok, value}
+    end
+  end
+
+  def resolve_env_value({:file, path}, _opts) when is_binary(path) do
+    case File.read(path) do
+      {:ok, contents} -> {:ok, String.trim_trailing(contents, "\n")}
+      {:error, reason} -> {:error, {:env_file_read_failed, path, reason}}
+    end
+  end
+
+  def resolve_env_value({:secret, slot, field}, opts) when is_atom(slot) and is_atom(field) do
+    case Keyword.fetch(opts, :dataset) do
+      {:ok, dataset} when is_binary(dataset) ->
+        case Zed.Secrets.Resolve.resolve(dataset, slot, field) do
+          {:ok, bytes} -> {:ok, String.trim_trailing(bytes, "\n")}
+          {:error, reason} -> {:error, reason}
+        end
+
+      _ ->
+        {:error, {:secret_dataset_not_provided, slot, field}}
+    end
+  end
+
+  def resolve_env_value({:secret, slot}, opts) when is_atom(slot) do
+    resolve_env_value({:secret, slot, :value}, opts)
+  end
+
+  def resolve_env_value(bin, _opts) when is_binary(bin), do: {:ok, bin}
+
+  def resolve_env_value(other, _opts), do: {:error, {:unsupported_env_ref, other}}
+
+  @doc """
   Compose the env file contents for a jail-contained BEAM release.
 
   Given a node name atom and a resolved cookie binary, returns the
@@ -103,10 +153,15 @@ defmodule Zed.Beam.Env do
     * `RELEASE_COOKIE` — the resolved cookie, quoted for POSIX shell.
 
   Optional `extra_env` map merges after the baseline — its keys must
-  be strings, values must be strings, and neither is escaped beyond
-  double-quoting. Use for application config the release reads from
-  its own environment (Path C4's PEER_NODE for the two-node cluster
-  smoke, for example).
+  be strings; values must be strings after any reference resolution.
+  Use for application config the release reads from its own
+  environment (Path C4's PEER_NODE for the two-node cluster smoke,
+  for example).
+
+  Path C7: this arity takes only pre-resolved binaries in the map.
+  See `compose_env_file/4` for a variant that resolves `{:secret, ...}`
+  / `{:env, ...}` / `{:file, ...}` refs in `extra_env` values before
+  interpolation.
 
   The `export` prefix is essential: without it, sourcing the file
   from the rc.d script sets the variables only in the sourcing
@@ -133,6 +188,33 @@ defmodule Zed.Beam.Env do
       |> Enum.join()
 
     baseline <> extra_lines
+  end
+
+  @doc """
+  Resolving variant of `compose_env_file/3`. `extra_env` values may be
+  binaries (passthrough) or refs (`{:env, ...}`, `{:file, ...}`,
+  `{:secret, ...}`). `opts` is threaded to `resolve_env_value/2` — in
+  particular `dataset:` is needed for `:secret` refs.
+
+  Returns `{:ok, iodata}` on success or `{:error, {:env_key, key,
+  reason}}` on the first failed resolution. Sort order is stable
+  (alphabetical by key) so the first error is deterministic.
+  """
+  @spec compose_env_file(node :: atom, cookie :: binary, extra_env :: map, opts :: keyword) ::
+          {:ok, binary} | {:error, term}
+  def compose_env_file(node_name, cookie, extra_env, opts)
+      when is_atom(node_name) and is_binary(cookie) and is_map(extra_env) and is_list(opts) do
+    Enum.reduce_while(Enum.sort_by(extra_env, fn {k, _} -> k end), {:ok, %{}}, fn
+      {k, v}, {:ok, acc} ->
+        case resolve_env_value(v, opts) do
+          {:ok, resolved} -> {:cont, {:ok, Map.put(acc, k, resolved)}}
+          {:error, reason} -> {:halt, {:error, {:env_key, k, reason}}}
+        end
+    end)
+    |> case do
+      {:ok, resolved_map} -> {:ok, compose_env_file(node_name, cookie, resolved_map)}
+      {:error, _} = err -> err
+    end
   end
 
   # `name` when the hostname contains a dot — matches Erlang's long-

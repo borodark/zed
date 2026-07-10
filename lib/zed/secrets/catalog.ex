@@ -41,6 +41,16 @@ defmodule Zed.Secrets.Catalog do
       algo: :selfsigned_tls,
       consumers: [:zed_web]
     },
+    # Phoenix endpoint secret_key_base for zedweb release
+    # (config/runtime.exs requires ZED_SECRET_KEY_BASE when ZED_SERVE=1).
+    # 256-bit random, base64. Rotates independently of the cookie —
+    # rotating invalidates all live LiveView sessions but not the
+    # cluster, so consumers list is [:zed_web] only.
+    zed_web_secret_key_base: %{
+      fields: [:value],
+      algo: :random_256_b64,
+      consumers: [:zed_web]
+    },
     # ------------------------------------------------------------------
     # Demo-cluster slots (specs/demo-cluster-plan.md). The cluster
     # cookie is shared by all five BEAM jails so they form one

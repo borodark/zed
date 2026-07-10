@@ -166,6 +166,17 @@ defmodule Zed.IR.Validate do
           {:secret_ref, slot, field, opts} ->
             validate_secret_ref!(slot, field, opts, app.id, config_key)
         end
+
+        # Path C7: env %{"KEY" => {:secret, ...}} — walk nested refs.
+        if config_key == :env and is_map(value) do
+          Enum.each(value, fn {env_key, env_value} ->
+            case classify_secret_ref(env_value) do
+              :not_a_secret_ref -> :ok
+              {:secret_ref, slot, field, opts} ->
+                validate_secret_ref!(slot, field, opts, app.id, {:env, env_key})
+            end
+          end)
+        end
       end)
     end)
   end

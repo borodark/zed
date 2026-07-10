@@ -216,9 +216,22 @@ defmodule Zed.Converge.Executor do
       case Zed.Beam.Env.resolve_cookie(args.cookie, resolve_opts) do
         {:ok, cookie_value} ->
           extra_env = args[:extra_env] || %{}
-          content = Zed.Beam.Env.compose_env_file(args.node_name, cookie_value, extra_env)
-          host_path = "#{Bastille.jails_dir()}/#{jail}/root#{env_file}"
-          write_env_file_idempotent(jail, env_file, host_path, content)
+          # Path C7: extra_env values may be {:secret, ...} / {:env, ...} /
+          # {:file, ...} refs. Use the resolving arity when any might
+          # need dataset context; passthrough for a pre-resolved map.
+          case Zed.Beam.Env.compose_env_file(
+                 args.node_name,
+                 cookie_value,
+                 extra_env,
+                 resolve_opts
+               ) do
+            {:ok, content} ->
+              host_path = "#{Bastille.jails_dir()}/#{jail}/root#{env_file}"
+              write_env_file_idempotent(jail, env_file, host_path, content)
+
+            {:error, reason} ->
+              {:error, {:jail_env_file_failed, jail, {:env_resolve_failed, reason}}}
+          end
 
         {:error, reason} ->
           {:error, {:jail_env_file_failed, jail, {:cookie_resolve_failed, reason}}}
