@@ -279,7 +279,7 @@ cd zed
 mix deps.get
 mix compile          # builds priv/peer_cred.so via elixir_make
 
-# Run tests (328 tests, 0 failures, 52 excluded as of 2026-07-09 / commit 639fb54)
+# Run tests (339 tests, 0 failures, 52 excluded as of 2026-07-10 / commit 8d78bb1)
 mix test                                       # unit + integration
 ZED_TEST_DATASET=<pool>/zed-test \
   doas mix test --include zfs_live             # + ZFS-on-FreeBSD tests
@@ -314,6 +314,7 @@ The roadmap lives in [`specs/iteration-plan.md`](specs/iteration-plan.md); each 
 | Path C3 | Real `mix release` + disterl over bastille0 | ✅ Done 2026-07-09 | Full release + Erlang distribution across loopback |
 | Path C4 | Two-node `hello_beam` cluster | ✅ Done 2026-07-09 | `PEER_NODE`-driven pairing |
 | Path C5 | 5-node `hello_beam` cluster | ✅ Done 2026-07-09 | libcluster + Zed `cluster` artifact (commit 639fb54) |
+| Path C6 | `{:secret, :slot}` cookie from encrypted ZFS | ✅ Done 2026-07-10 | Cookie generated once by `Zed.Bootstrap.init`, resolved at converge via `com.zed:secret.*.path` property (commit 8d78bb1) |
 | B0 | `zedz` mobile QR scanner | Planned | Fork of probnik with `zed_admin` payload handler |
 
 Layers C (NAS-adjacent: SMB + Time Machine) and D (Probnik Vault + Shamir) are shelved per the iteration plan; unshelve only on explicit decision.

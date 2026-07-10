@@ -60,8 +60,9 @@ and [demo-cluster-plan.md](demo-cluster-plan.md).
 | **Path C3 — Real mix release + disterl over bastille0** | Full `mix release` deployed and reachable via Erlang distribution over the bastille0 loopback | ✅ Shipped 2026-07-09 |
 | **Path C4 — Two-node cluster** | `hello_beam` two-node cluster via `PEER_NODE` | ✅ Shipped 2026-07-09 |
 | **Path C5 — 5-node cluster** | `hello_beam` five-node cluster via libcluster + Zed `cluster` artifact | ✅ Shipped 2026-07-09 (commit 639fb54) |
+| **Path C6 — `{:secret, :slot}` cookie resolution** | Cookie generated once by `Zed.Bootstrap.init`, stored on encrypted ZFS, resolved at converge via ZFS-property lookup, written into jail env files. `SMOKE_COOKIE` no longer needed in operator's environment. | ✅ Shipped 2026-07-10 (commit 8d78bb1) |
 
-Test suite as of 639fb54: **328 tests, 0 failures, 52 excluded.**
+Test suite as of 8d78bb1: **339 tests, 0 failures, 52 excluded.**
 
 ---
 
