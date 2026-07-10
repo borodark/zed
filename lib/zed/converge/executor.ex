@@ -751,7 +751,12 @@ defmodule Zed.Converge.Executor do
   defp set_cookie_if_present(_node, nil), do: :ok
 
   defp set_cookie_if_present(node, cookie) when is_binary(cookie) do
-    Node.set_cookie(node, String.to_atom(cookie))
+    # Set BOTH the local cookie (so :net_adm.ping uses it) and the
+    # per-target cookie (belt-and-suspenders for older Erlang
+    # versions where net_adm's cookie source is version-specific).
+    cookie_atom = String.to_atom(cookie)
+    Node.set_cookie(cookie_atom)
+    Node.set_cookie(node, cookie_atom)
     :ok
   end
 
