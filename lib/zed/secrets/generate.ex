@@ -23,9 +23,22 @@ defmodule Zed.Secrets.Generate do
   # Individual algorithms
   # ----------------------------------------------------------------------
 
-  @doc "32 bytes of cryptographic randomness, base64url without padding."
+  @doc """
+  32 bytes of cryptographic randomness, base64url without padding.
+
+  Guarantees the output does NOT start with `-` or `_`: those two
+  characters are exactly the ones that break Erlang's `-setcookie
+  <value>` argument parsing (a value starting with `-` is treated
+  as the next flag), and `_` is the paired URL-safe char. Reroll on
+  a bad first byte — probability ~2/64 per attempt, so the expected
+  number of tries is essentially one.
+  """
   def random_256_b64 do
-    :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    case :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false) do
+      <<"-", _::binary>> -> random_256_b64()
+      <<"_", _::binary>> -> random_256_b64()
+      good -> good
+    end
   end
 
   @doc """
