@@ -124,7 +124,7 @@ defmodule Zed.Converge.Plan do
           build_jail_service_install_step(app_id, jail_id, service_name, config),
           build_jail_app_svc_step(app_id, jail_id, service_name)
         ]
-        |> Kernel.++(build_jail_health_steps(app_id, jail_id, service_name, config))
+        |> Kernel.++(build_jail_health_steps(app_id, jail_id, service_name, config, pool))
     end
   end
 
@@ -397,8 +397,9 @@ defmodule Zed.Converge.Plan do
   # Probes on contained apps go through the host's network to the
   # jail's IP — the jail's own loopback isn't reachable from outside,
   # but bastille0-attached jail IPs are.
-  defp build_jail_health_steps(app_id, jail_id, service_name, config) do
+  defp build_jail_health_steps(app_id, jail_id, service_name, config, pool) do
     checks = config[:health] || []
+    zed_dataset = if is_nil(pool), do: nil, else: "#{pool}/zed"
 
     checks
     |> Enum.with_index()
@@ -411,7 +412,11 @@ defmodule Zed.Converge.Plan do
           jail: jail_id,
           app: app_id,
           probe_type: type,
-          opts: opts
+          # Path C6: threads the Zed metadata dataset into the probe
+          # so `:beam_ping`'s cookie ref `{:secret, :beam_cookie}`
+          # can resolve at probe-time the same way :jail_app :deploy
+          # resolves it at env-file-write-time.
+          opts: Map.put(opts, :zed_dataset, zed_dataset)
         },
         deps: ["jail:svc:#{jail_id}:#{service_name}"]
       }

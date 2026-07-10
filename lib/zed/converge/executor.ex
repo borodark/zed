@@ -668,9 +668,10 @@ defmodule Zed.Converge.Executor do
   defp probe_once(:beam_ping, opts) do
     node = Map.get(opts, :node)
     cookie_ref = Map.get(opts, :cookie)
+    zed_dataset = Map.get(opts, :zed_dataset)
 
     with :ok <- ensure_distribution_started(node),
-         {:ok, cookie} <- resolve_probe_cookie(cookie_ref),
+         {:ok, cookie} <- resolve_probe_cookie(cookie_ref, zed_dataset),
          :ok <- set_cookie_if_present(node, cookie) do
       case :net_adm.ping(node) do
         :pong -> :ok
@@ -735,11 +736,13 @@ defmodule Zed.Converge.Executor do
   # Accept either an already-resolved binary or a Zed.Beam.Env
   # cookie ref. Same shapes as :jail_app :deploy so operators pass
   # the same value in both places.
-  defp resolve_probe_cookie(nil), do: {:ok, nil}
-  defp resolve_probe_cookie(bin) when is_binary(bin), do: {:ok, bin}
+  defp resolve_probe_cookie(nil, _dataset), do: {:ok, nil}
+  defp resolve_probe_cookie(bin, _dataset) when is_binary(bin), do: {:ok, bin}
 
-  defp resolve_probe_cookie(ref) do
-    case Zed.Beam.Env.resolve_cookie(ref) do
+  defp resolve_probe_cookie(ref, dataset) do
+    opts = if is_nil(dataset), do: [], else: [dataset: dataset]
+
+    case Zed.Beam.Env.resolve_cookie(ref, opts) do
       {:ok, v} -> {:ok, v}
       {:error, reason} -> {:error, {:probe_cookie_resolve_failed, reason}}
     end
