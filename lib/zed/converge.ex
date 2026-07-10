@@ -202,7 +202,7 @@ defmodule Zed.Converge do
   defp find_target_version(_), do: "unknown"
 
   defp restart_app_service(app, platform) do
-    service = app.config[:service] || to_string(app.id)
+    service = to_string(app.config[:service] || app.id)
     platform.service_restart(service)
   end
 
