@@ -61,8 +61,9 @@ and [demo-cluster-plan.md](demo-cluster-plan.md).
 | **Path C4 — Two-node cluster** | `hello_beam` two-node cluster via `PEER_NODE` | ✅ Shipped 2026-07-09 |
 | **Path C5 — 5-node cluster** | `hello_beam` five-node cluster via libcluster + Zed `cluster` artifact | ✅ Shipped 2026-07-09 (commit 639fb54) |
 | **Path C6 — `{:secret, :slot}` cookie resolution** | Cookie generated once by `Zed.Bootstrap.init`, stored on encrypted ZFS, resolved at converge via ZFS-property lookup, written into jail env files. `SMOKE_COOKIE` no longer needed in operator's environment. | ✅ Shipped 2026-07-10 (commit 8d78bb1) |
+| **Path C7 — zedweb: Zed's own release via Zed itself** | First real-app migration. `env %{...}` DSL accepts slot-backed values via new `resolve_env_value/2` + `compose_env_file/4`. New `zed_web_secret_key_base` catalog slot. `/health` endpoint on the LiveView router. SmokeZedweb: single jail, 10 metal-verified invariants including RELEASE_COOKIE + ZED_SECRET_KEY_BASE match on-disk secrets, `Zed.Role.current() = :web` inside jail, HTTP 200 on both `/health` and LiveView root. | ✅ Shipped 2026-07-10 (commit 380690e) |
 
-Test suite as of 8d78bb1: **339 tests, 0 failures, 52 excluded.**
+Test suite as of 380690e: **351 tests, 0 failures, 52 excluded.**
 
 ---
 

@@ -31,7 +31,7 @@ ZFS user properties (`com.zed:version=1.4.2`) are a built-in, replicated key-val
 
 - `mix test` — full suite (DSL, IR, plan, jail, agent, cluster, converge, health, secrets, etc.). Run anywhere.
 - `mix test --include zfs_live --include bastille_live` — adds ZFS + Bastille live integration on FreeBSD.
-- **Total (as of 8d78bb1)**: 339 tests, 0 failures, 52 excluded.
+- **Total (as of 380690e)**: 351 tests, 0 failures, 52 excluded.
 
 ## DSL Example
 
