@@ -120,9 +120,12 @@ verify() {
         rc=1
     fi
 
-    # BEAM up + role
+    # BEAM up + role. `bin/zedweb rpc` spawns a fresh BEAM client
+    # that needs RELEASE_COOKIE + RELEASE_NODE from the env file —
+    # `bastille cmd` starts a bare sh with none of the rc.d env, so
+    # source /var/db/zed/zedweb.env first.
     if jail_running "$JAIL"; then
-        role=$(doas bastille cmd "$JAIL" sh -c "/opt/${APP}/current/bin/${APP} rpc 'IO.puts(inspect(Zed.Role.current()))'" 2>/dev/null | tail -1 | tr -d ' ')
+        role=$(doas bastille cmd "$JAIL" sh -c ". /var/db/zed/zedweb.env && /opt/${APP}/current/bin/${APP} rpc 'IO.puts(inspect(Zed.Role.current()))'" 2>&1 | tr -d '\r' | grep -E '^:(web|ops|full)$' | head -1)
         if [ "$role" = ":web" ]; then
             log "  [OK] Zed.Role.current() = :web inside jail"
         else
